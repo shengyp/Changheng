@@ -34,6 +34,12 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 
+import static com.xyz.question_bank_management_system.service.impl.AttemptPracticeScoring.PRACTICE_DEFAULT_SCORE;
+import static com.xyz.question_bank_management_system.service.impl.AttemptPracticeScoring.buildPracticeScores;
+import static com.xyz.question_bank_management_system.service.impl.AttemptPracticeScoring.estimatePracticeQuestionLimit;
+import static com.xyz.question_bank_management_system.service.impl.AttemptPracticeScoring.isObjective;
+import static com.xyz.question_bank_management_system.service.impl.AttemptPracticeScoring.pickPracticeQuestionsByScore;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -52,9 +58,6 @@ public class AttemptServiceImpl implements AttemptService {
     private static final double ADAPTIVE_WRONG_WEIGHT = 0.14;
     private static final double ADAPTIVE_NOVELTY_WEIGHT = 0.06;
     private static final double ADAPTIVE_RANDOM_JITTER = 0.02;
-    private static final int PRACTICE_DEFAULT_SCORE = 10;
-    private static final int PRACTICE_PROGRAMMING_SCORE = 20;
-
     private final QbAssignmentMapper assignmentMapper;
     private final QbAssignmentTargetMapper targetMapper;
 
@@ -1096,130 +1099,6 @@ public class AttemptServiceImpl implements AttemptService {
             }
         }
         return normalized;
-    }
-
-    private int estimatePracticeQuestionLimit(int totalScore) {
-        return Math.max(1, Math.min(50, (int) Math.ceil(totalScore / (double) PRACTICE_DEFAULT_SCORE)));
-    }
-
-    private int[] buildPracticeScores(List<QbQuestion> selected) {
-        int[] scores = new int[selected.size()];
-        for (int i = 0; i < selected.size(); i++) {
-            scores[i] = practiceScoreForQuestion(selected.get(i));
-        }
-        return scores;
-    }
-
-    private List<QbQuestion> pickPracticeQuestionsByScore(List<QbQuestion> orderedCandidates, int targetTotalScore) {
-        if (orderedCandidates == null || orderedCandidates.isEmpty()) {
-            return List.of();
-        }
-
-        int size = orderedCandidates.size();
-        int[] suffixDefaultCount = new int[size + 1];
-        int[] suffixProgrammingCount = new int[size + 1];
-        for (int i = size - 1; i >= 0; i--) {
-            suffixDefaultCount[i] = suffixDefaultCount[i + 1];
-            suffixProgrammingCount[i] = suffixProgrammingCount[i + 1];
-            if (isProgrammingQuestionType(orderedCandidates.get(i).getQuestionType())) {
-                suffixProgrammingCount[i]++;
-            } else {
-                suffixDefaultCount[i]++;
-            }
-        }
-
-        List<QbQuestion> selected = new ArrayList<>();
-        Set<Long> selectedIds = new HashSet<>();
-        int remaining = targetTotalScore;
-
-        for (int i = 0; i < size && remaining > 0; i++) {
-            QbQuestion question = orderedCandidates.get(i);
-            int score = practiceScoreForQuestion(question);
-            if (score > remaining) {
-                continue;
-            }
-            if (!canAssemblePracticeScore(remaining - score, suffixDefaultCount[i + 1], suffixProgrammingCount[i + 1])) {
-                continue;
-            }
-            selected.add(question);
-            if (question.getId() != null) {
-                selectedIds.add(question.getId());
-            }
-            remaining -= score;
-        }
-
-        if (remaining > 0) {
-            for (QbQuestion question : orderedCandidates) {
-                if (remaining <= 0 || selectedIds.contains(question.getId())) {
-                    continue;
-                }
-                int score = practiceScoreForQuestion(question);
-                if (score > remaining) {
-                    continue;
-                }
-                selected.add(question);
-                if (question.getId() != null) {
-                    selectedIds.add(question.getId());
-                }
-                remaining -= score;
-            }
-        }
-
-        if (remaining > 0) {
-            for (QbQuestion question : orderedCandidates) {
-                if (remaining <= 0 || selectedIds.contains(question.getId())) {
-                    continue;
-                }
-                selected.add(question);
-                if (question.getId() != null) {
-                    selectedIds.add(question.getId());
-                }
-                remaining -= practiceScoreForQuestion(question);
-            }
-        }
-        return selected;
-    }
-
-    private boolean canAssemblePracticeScore(int remainingScore, int defaultQuestionCount, int programmingQuestionCount) {
-        if (remainingScore < 0) {
-            return false;
-        }
-        if (remainingScore == 0) {
-            return true;
-        }
-        if (remainingScore % PRACTICE_DEFAULT_SCORE != 0) {
-            return false;
-        }
-        int maxProgrammingUsed = Math.min(programmingQuestionCount, remainingScore / PRACTICE_PROGRAMMING_SCORE);
-        for (int programmingUsed = maxProgrammingUsed; programmingUsed >= 0; programmingUsed--) {
-            int leftover = remainingScore - programmingUsed * PRACTICE_PROGRAMMING_SCORE;
-            if (leftover < 0) {
-                continue;
-            }
-            int defaultNeeded = leftover / PRACTICE_DEFAULT_SCORE;
-            if (defaultNeeded <= defaultQuestionCount) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private int practiceScoreForQuestion(QbQuestion question) {
-        return isProgrammingQuestionType(question == null ? null : question.getQuestionType())
-                ? PRACTICE_PROGRAMMING_SCORE
-                : PRACTICE_DEFAULT_SCORE;
-    }
-
-    private boolean isProgrammingQuestionType(Integer questionType) {
-        return Objects.equals(questionType, QuestionTypeEnum.CODE.getCode());
-    }
-
-    private boolean isObjective(Integer questionType) {
-        if (questionType == null) return false;
-        return questionType == QuestionTypeEnum.SINGLE.getCode()
-                || questionType == QuestionTypeEnum.MULTIPLE.getCode()
-                || questionType == QuestionTypeEnum.TRUE_FALSE.getCode()
-                || questionType == QuestionTypeEnum.BLANK.getCode();
     }
 
     private Integer extractAnswerFormat(String snapshotJson) {

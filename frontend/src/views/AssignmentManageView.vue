@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { assignmentApi, classApi, paperApi, teacherApi } from '@/api/services'
@@ -680,42 +680,6 @@ onMounted(async () => {
   </el-drawer>
 </template>
 
-<style scoped>
-.table-pager {
-  margin-top: 12px;
-  justify-content: flex-end;
-}
+<style scoped src="@/styles/assignment-manage-view.css"></style>
 
-.panel-head,
-.detail-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
 
-.panel-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.drawer-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.answer-preview {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.6;
-}
-
-:deep(.clickable-row td) {
-  cursor: pointer;
-}
-</style>

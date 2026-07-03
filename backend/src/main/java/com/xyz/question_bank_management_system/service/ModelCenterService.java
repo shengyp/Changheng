@@ -22,7 +22,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
-import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -32,6 +31,21 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.defaultUserId;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.iso;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.lower;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.normalizeAuthorization;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.number;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.numberDouble;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.numberInt;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.text;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.textOrDefault;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.textOrNull;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.timestamp;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.timestampOrNow;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.trimTrailingSlash;
+import static com.xyz.question_bank_management_system.service.ModelCenterSupport.truthy;
 
 @Service
 @RequiredArgsConstructor
@@ -996,105 +1010,4 @@ public class ModelCenterService {
         return Map.of("key", key, "label", label);
     }
 
-    private long defaultUserId(Long userId) {
-        return userId == null ? 0L : userId;
-    }
-
-    private Long number(Object value) {
-        if (value == null) return 0L;
-        if (value instanceof Number number) {
-            return number.longValue();
-        }
-        return Long.parseLong(String.valueOf(value));
-    }
-
-    private int numberInt(Object value, int fallback) {
-        if (value == null) return fallback;
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (Exception ex) {
-            return fallback;
-        }
-    }
-
-    private double numberDouble(Object value, double fallback) {
-        if (value == null) return fallback;
-        if (value instanceof Number number) {
-            return number.doubleValue();
-        }
-        try {
-            return Double.parseDouble(String.valueOf(value));
-        } catch (Exception ex) {
-            return fallback;
-        }
-    }
-
-    private boolean truthy(Object value) {
-        if (value == null) return false;
-        if (value instanceof Boolean bool) return bool;
-        if (value instanceof Number number) return number.intValue() != 0;
-        String text = String.valueOf(value).trim();
-        return "true".equalsIgnoreCase(text) || "1".equals(text) || "active".equalsIgnoreCase(text);
-    }
-
-    private String text(Object value) {
-        return value == null ? "" : String.valueOf(value).trim();
-    }
-
-    private String textOrNull(Object value) {
-        String text = text(value);
-        return StringUtils.hasText(text) ? text : null;
-    }
-
-    private String textOrDefault(Object value, String fallback) {
-        String text = textOrNull(value);
-        return text == null ? fallback : text;
-    }
-
-    private String lower(String value) {
-        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-    }
-
-    private String trimTrailingSlash(String value) {
-        if (!StringUtils.hasText(value)) return value;
-        String normalized = value.trim();
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        return normalized;
-    }
-
-    private String normalizeAuthorization(String apiKey) {
-        String normalized = apiKey.trim();
-        if (normalized.regionMatches(true, 0, "Bearer ", 0, 7)) {
-            return normalized;
-        }
-        return "Bearer " + normalized;
-    }
-
-    private String iso(Object value) {
-        if (value == null) return null;
-        if (value instanceof Timestamp timestamp) {
-            return timestamp.toLocalDateTime().toString();
-        }
-        if (value instanceof LocalDateTime time) {
-            return time.toString();
-        }
-        return String.valueOf(value);
-    }
-
-    private Timestamp timestamp(Object value) {
-        if (value == null) return null;
-        if (value instanceof Timestamp timestamp) return timestamp;
-        if (value instanceof LocalDateTime time) return Timestamp.valueOf(time);
-        return Timestamp.valueOf(String.valueOf(value).replace("T", " "));
-    }
-
-    private Timestamp timestampOrNow(Object value) {
-        Timestamp timestamp = timestamp(value);
-        return timestamp == null ? Timestamp.valueOf(LocalDateTime.now()) : timestamp;
-    }
 }

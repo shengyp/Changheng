@@ -1,0 +1,251 @@
+﻿.admin-llm-page {
+  display: grid;
+  gap: 16px;
+}
+
+.llm-hero {
+  min-height: 138px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background:
+    linear-gradient(120deg, rgba(79, 143, 123, 0.12), transparent 46%),
+    linear-gradient(90deg, rgba(215, 185, 140, 0.14), transparent 56%),
+    var(--app-surface);
+  box-shadow: 0 12px 28px rgba(53, 83, 73, 0.07);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--app-primary-dark);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.llm-hero h1 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0;
+}
+
+.hero-copy {
+  margin: 8px 0 0;
+  color: var(--app-text-soft);
+}
+
+.hero-actions,
+.toolbar,
+.model-meta,
+.tag-line,
+.model-actions,
+.template-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  min-height: 86px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.metric-card .el-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--app-primary-soft);
+  color: var(--app-primary-dark);
+  font-size: 21px;
+}
+
+.metric-card strong {
+  display: block;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.metric-card span,
+.model-desc,
+.model-title span,
+.detail-title span {
+  color: var(--app-text-soft);
+}
+
+.manager-shell {
+  padding: 18px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 28px rgba(53, 83, 73, 0.06);
+}
+
+.toolbar {
+  margin-bottom: 16px;
+}
+
+.toolbar .el-input {
+  width: 260px;
+}
+
+.toolbar .el-select {
+  width: 160px;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.model-card {
+  min-height: 238px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(249, 251, 250, 0.92), #fff), var(--app-surface);
+  box-shadow: 0 10px 24px rgba(53, 83, 73, 0.06);
+  will-change: transform;
+}
+
+.model-card.is-default {
+  border-color: #9fc8b8;
+  box-shadow: 0 14px 28px rgba(79, 143, 123, 0.14);
+}
+
+.model-card.is-disabled {
+  opacity: 0.68;
+}
+
+.model-card__top,
+.detail-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.model-mark {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 46%), var(--app-primary);
+}
+
+.model-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.model-title h3,
+.detail-title h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+
+.model-title span,
+.detail-title span {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-desc {
+  min-height: 42px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.model-meta span {
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--app-surface-soft);
+  color: #4f625b;
+  font-size: 12px;
+}
+
+.tag-line {
+  min-height: 24px;
+}
+
+.model-actions {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid #edf2ef;
+}
+
+.template-table {
+  width: 100%;
+}
+
+.dialog-body {
+  max-height: 64vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.detail-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (max-width: 1100px) {
+  .metric-grid,
+  .model-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .llm-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .metric-grid,
+  .model-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar .el-input,
+  .toolbar .el-select {
+    width: 100%;
+  }
+}

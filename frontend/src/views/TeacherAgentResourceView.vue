@@ -23,15 +23,70 @@ import {
   defaultResourceTypes,
   demoResources,
   demoStudent,
-  deprecatedResourceTypes,
   editableAgentIds,
   edgesBase,
-  exerciseResourceTypes,
-  multimodalResourceTypes,
-  resourceTypeLabels,
   stageOptions,
   videoResourceTypes,
 } from '@/data/teacherAgentResource'
+import {
+  persistActivityLogs,
+  prependActivityLog,
+  readActivityLogs,
+  removeActivityLog,
+} from '@/features/teacher-agent-resource/activityLogs'
+import {
+  buildAgentProviderPayload,
+  currentAgentProviderLabel as buildCurrentAgentProviderLabel,
+  providerBindingMode as buildProviderBindingMode,
+  providerSummaryText as buildProviderSummaryText,
+  traceSummary as buildTraceSummary,
+} from '@/features/teacher-agent-resource/providerConfig'
+import {
+  buildRemotionProps,
+  buildFallbackGeneratedResources,
+  buildRecommendTargetPayload,
+  buildResourceSaveConfirm,
+  buildResourceSavePayload,
+  buildRevisionFeedback,
+  buildVideoCover,
+  canSaveGeneratedResource,
+  ensureVideoResource,
+  externalVideoLinks,
+  hasConcreteVideo,
+  hasExternalVideoResource,
+  isConcreteVideoUrl,
+  isQuizAnswerCorrect,
+  isVideoSearchUrl,
+  formatDimensionNames as formatResourceDimensionNames,
+  formatWeakPointNames,
+  normalizeGeneratedCards,
+  normalizeAnswer,
+  primaryVideo,
+  quizDisplayQuestions,
+  quizFeedbackText,
+  remotionPropsFilename,
+  safeFileName,
+  validateResourceBeforeSave,
+  videoSourceStatus,
+} from '@/features/teacher-agent-resource/resourceCards'
+import {
+  AGENT_WORKSPACE_STORAGE_KEY,
+  TASK_STORAGE_KEY,
+  buildTaskSnapshot,
+  buildWorkspaceSnapshot,
+  readStorageJson,
+  removeStorageItem,
+  writeStorageJson,
+} from '@/features/teacher-agent-resource/workspaceStorage'
+import {
+  agentNodeStatusClass,
+  agentStatusText,
+  buildDynamicEdges,
+  edgeClassState,
+  isAgentReady,
+  isPendingAgent,
+  isReceivingAgent,
+} from '@/features/teacher-agent-resource/workflow'
 
 const rootRef = ref(null)
 const loading = ref(false)
@@ -78,10 +133,6 @@ const videoPlayback = reactive({})
 const quizAnswers = reactive({})
 const VIDEO_SEARCH_URL_MESSAGE = '当前链接是搜索结果页，不是具体视频。请打开某个视频后复制视频播放页链接。'
 
-const TASK_STORAGE_KEY = 'teacher-agent-resource-task'
-const AGENT_WORKSPACE_STORAGE_KEY = 'teacher-agent-resource-workspace'
-const AGENT_LOG_STORAGE_KEY = 'teacher-agent-resource-logs'
-
 let ctx
 let taskPollTimer = null
 let videoTimer = null
@@ -102,38 +153,7 @@ const agentOutputs = reactive({
 
 const agentPositions = reactive(JSON.parse(JSON.stringify(defaultAgentPositions)))
 
-// 鍔ㄦ€佽绠?SVG 杩炵嚎璺緞 (璺熼殢鎷栨嫿鏇存柊)
-const dynamicEdges = computed(() => {
-  const nodeWidth = 260
-  const nodeHeight = 88
-  const verticalCenter = nodeHeight / 2
-
-  return edgesBase.map(edge => {
-    const fromPos = agentPositions[edge.from];
-    if (!fromPos) return edge;
-
-    let toPos, endX, endY;
-
-    // 终点 Target box 的位置，匹配固定框的位置。
-    if (edge.to === 'target') {
-       endX = 1980; 
-       endY = 340;
-    } else {
-       toPos = agentPositions[edge.to];
-       if (!toPos) return edge;
-       endX = toPos.x;
-       endY = toPos.y + verticalCenter;
-    }
-
-    const startX = fromPos.x + nodeWidth;
-    const startY = fromPos.y + verticalCenter;
-
-    const cpOffset = Math.max(50, Math.abs(endX - startX) * 0.45)
-    const path = `M ${startX} ${startY} C ${startX + cpOffset} ${startY}, ${endX - cpOffset} ${endY}, ${endX} ${endY}`
-
-    return { ...edge, path, startX, startY, endX, endY }
-  })
-})
+const dynamicEdges = computed(() => buildDynamicEdges(edgesBase, agentPositions))
 
 // ===== 拖拽交互逻辑 =====
 const dragState = reactive({
@@ -225,30 +245,13 @@ const profileStats = computed(() => {
   ]
 })
 
-const defaultProviderOption = computed(() =>
-  providerOptions.value.find((item) => item.providerKey === defaultProviderKey.value) || null,
-)
-
-const providerSummaryText = computed(() => {
-  if (defaultProviderOption.value) {
-    return `默认模型：${defaultProviderOption.value.label || defaultProviderOption.value.providerKey}`
-  }
-  if (providerOptions.value.length > 0) {
-    return '默认模型：跟随系统默认'
-  }
-  return '默认模型：暂无可用模型'
-})
+const providerSummaryText = computed(() => buildProviderSummaryText(providerOptions.value, defaultProviderKey.value))
 
 function isReady(agentId) {
-  if (!selectedStudent.value) return false
-  if (agentId === 'preprocess') return true
-  if (agentId === 'coordinator') return completedSet.value.has('preprocess')
-  if (['knowledge', 'ability', 'behavior'].includes(agentId)) return completedSet.value.has('coordinator')
-  if (agentId === 'resource') return completedSet.value.has('knowledge')
-  if (agentId === 'practice') return completedSet.value.has('ability') && completedSet.value.has('behavior')
-  if (agentId === 'report') return completedSet.value.has('resource') && completedSet.value.has('practice')
-  if (['qualityReview', 'consistencyReview'].includes(agentId)) return completedSet.value.has('report')
-  return false
+  return isAgentReady(agentId, {
+    hasStudent: Boolean(selectedStudent.value),
+    completedSet: completedSet.value,
+  })
 }
 
 function isCompleted(agentId) {
@@ -260,60 +263,56 @@ function isActive(agentId) {
 }
 
 function isReceiving(agentId) {
-  return flowingEdges.value.some((edge) => edge.to === agentId)
+  return isReceivingAgent(agentId, flowingEdges.value)
 }
 
 function isPending(agentId) {
-  return !isReady(agentId) && !isCompleted(agentId) && !isActive(agentId) && !isReceiving(agentId)
+  return isPendingAgent(agentId, {
+    ready: isReady(agentId),
+    completed: isCompleted(agentId),
+    active: isActive(agentId),
+    flowingEdges: flowingEdges.value,
+  })
 }
 
 function statusClass(agentId) {
-  if (isActive(agentId) || isReceiving(agentId)) return 'is-running'
-  if (isCompleted(agentId)) return 'is-done'
-  return 'is-idle'
+  return agentNodeStatusClass({
+    active: isActive(agentId),
+    receiving: isReceiving(agentId),
+    completed: isCompleted(agentId),
+  })
 }
 
 function agentStatus(agentId) {
-  if (isCompleted(agentId)) return '已完成'
-  if (isActive(agentId)) return '流转中'
-  if (isReady(agentId)) return '可执行'
-  return '等待上游'
+  return agentStatusText({
+    completed: isCompleted(agentId),
+    active: isActive(agentId),
+    ready: isReady(agentId),
+  })
 }
 
 function edgeClass(edge) {
-  return {
-    'flow-edge': true,
-    'is-flowing': flowingSet.value.has(edge.id),
-    'is-finished': completedSet.value.has(edge.from),
-    'is-resting': !flowingSet.value.has(edge.id),
-  }
+  return edgeClassState(edge, {
+    flowingSet: flowingSet.value,
+    completedSet: completedSet.value,
+  })
 }
 
 function addLog(agentId, content) {
-  logs.value.unshift({
-    id: `${agentId}-${Date.now()}`,
-    agent: agents[agentId].cnTitle,
-    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-    content,
-  })
+  logs.value = prependActivityLog(logs.value, agentId, content, agents)
   persistLogs()
 }
 
 function persistLogs() {
-  localStorage.setItem(AGENT_LOG_STORAGE_KEY, JSON.stringify(logs.value))
+  persistActivityLogs(logs.value)
 }
 
 function restoreLogs() {
-  try {
-    const raw = localStorage.getItem(AGENT_LOG_STORAGE_KEY)
-    logs.value = raw ? JSON.parse(raw) : []
-  } catch {
-    logs.value = []
-  }
+  logs.value = readActivityLogs()
 }
 
 function deleteLog(logId) {
-  logs.value = logs.value.filter((item) => item.id !== logId)
+  logs.value = removeActivityLog(logs.value, logId)
   persistLogs()
 }
 
@@ -363,8 +362,7 @@ function persistTask(task) {
   generationTaskId.value = task.taskId
   generationTaskStatus.value = task.status || 'queued'
   generationTaskMessage.value = task.message || ''
-  localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify({
-    taskId: task.taskId,
+  writeStorageJson(TASK_STORAGE_KEY, buildTaskSnapshot(task, {
     studentId: selectedStudent.value?.studentId || null,
     stage: stage.value,
   }))
@@ -377,7 +375,7 @@ function clearTaskPersistence(options = {}) {
   generationTaskId.value = ''
   generationTaskStatus.value = 'idle'
   generationTaskMessage.value = preserveMessage ? preservedMessage : ''
-  localStorage.removeItem(TASK_STORAGE_KEY)
+  removeStorageItem(TASK_STORAGE_KEY)
   persistWorkspace()
 }
 
@@ -392,13 +390,13 @@ function syncGeneratedOutputs() {
 
 function applyGenerationResult(result) {
   lastRun.value = result || {}
-  generatedResources.value = normalizeGeneratedCards(result?.resources)
+  generatedResources.value = normalizeGeneratedCards(result?.resources, resourceCardContext())
   syncGeneratedOutputs()
   persistWorkspace()
 }
 
 function persistWorkspace() {
-  localStorage.setItem(AGENT_WORKSPACE_STORAGE_KEY, JSON.stringify({
+  writeStorageJson(AGENT_WORKSPACE_STORAGE_KEY, buildWorkspaceSnapshot({
     selectedStudentId: selectedStudentId.value,
     stage: stage.value,
     completedAgents: completedAgents.value,
@@ -418,16 +416,15 @@ function persistWorkspace() {
 
 function restoreWorkspace() {
   try {
-    const raw = localStorage.getItem(AGENT_WORKSPACE_STORAGE_KEY)
-    if (!raw) return
-    const saved = JSON.parse(raw)
+    const saved = readStorageJson(AGENT_WORKSPACE_STORAGE_KEY)
+    if (!saved) return
     if (saved.selectedStudentId) selectedStudentId.value = String(saved.selectedStudentId)
     if (saved.stage) stage.value = saved.stage
     completedAgents.value = Array.isArray(saved.completedAgents) ? saved.completedAgents : []
     activeAgentId.value = saved.activeAgentId || ''
     flowingEdges.value = Array.isArray(saved.flowingEdges) ? saved.flowingEdges : []
     candidateResources.value = Array.isArray(saved.candidateResources) ? saved.candidateResources : []
-    generatedResources.value = normalizeGeneratedCards(saved.generatedResources)
+    generatedResources.value = normalizeGeneratedCards(saved.generatedResources, resourceCardContext())
     lastRun.value = saved.lastRun || null
     teacherRequirement.value = saved.teacherRequirement || ''
     Object.assign(generationConfig, saved.generationConfig || {})
@@ -500,13 +497,11 @@ function primaryDimension() {
 }
 
 function formatWeakNames(limit = 3) {
-  const names = weakPoints.value.map((item) => item.tagName).filter(Boolean).slice(0, limit)
-  return names.length ? names.join('、') : '暂无明显薄弱知识点'
+  return formatWeakPointNames(weakPoints.value, limit)
 }
 
 function formatDimensionNames(limit = 3) {
-  const names = lowestDimensions.value.map((item) => `${item.name}(${item.score ?? 0})`).slice(0, limit)
-  return names.length ? names.join('、') : '暂无维度数据'
+  return formatResourceDimensionNames(lowestDimensions.value, limit)
 }
 
 async function loadCandidateResources() {
@@ -529,90 +524,31 @@ async function loadCandidateResources() {
 }
 
 function buildGeneratedResources() {
-  const student = selectedStudent.value || {}
-  const weak = primaryWeakPoint()
-  const dim = primaryDimension()
-  const weakName = weak.tagName || 'C 语言核心知识'
-  const dimName = dim.name || '综合编程能力'
-  const suggestions = (student.suggestions || []).slice(0, 2).join('；') || '建议按知识补强、例题讲解、变式训练的节奏推进。'
-
-  return [
-    {
-      id: 'knowledge',
-      title: `${student.studentName || '学生'} - ${weakName} 知识补强包`,
-      resourceType: 'article',
-      summary: `围绕 ${weakName} 汇总概念解释、典型误区和 3 组递进例题，优先解决当前掌握度较低的问题。`,
-      knowledgePointId: weak.knowledgePointId,
-      tagId: weak.tagId,
-      sourceAgent: '知识诊断智能体',
-      saved: false,
-    },
-    {
-      id: 'review',
-      title: `${student.studentName || '学生'} 错因复盘清单`,
-      resourceType: 'agent_plan',
-      summary: `基于阶段画像生成错因复盘问题：先回看 ${weakName} 的错题，再记录错误原因、修正代码和同类题迁移结论。`,
-      knowledgePointId: weak.knowledgePointId,
-      tagId: weak.tagId,
-      sourceAgent: '错因/行为分析智能体',
-      saved: false,
-    },
-    {
-      id: 'ability',
-      title: `${student.studentName || '学生'} ${dimName} 能力提升任务`,
-      resourceType: 'practice_plan',
-      summary: `针对 ${dimName} 设计一个小型 C 语言任务，包含需求拆解、边界条件、调试记录和代码复盘要求。`,
-      knowledgePointId: weak.knowledgePointId,
-      tagId: weak.tagId,
-      sourceAgent: '练习设计智能体',
-      saved: false,
-    },
-    {
-      id: 'path',
-      title: `${student.studentName || '学生'} 个性化练习路径`,
-      resourceType: 'practice_plan',
-      summary: `${suggestions} 路径安排为：知识回顾 1 次、基础题 5 题、综合题 2 题、复盘总结 1 份。`,
-      knowledgePointId: weak.knowledgePointId,
-      tagId: weak.tagId,
-      sourceAgent: '资源生成智能体',
-      saved: false,
-    },
-  ]
+  return buildFallbackGeneratedResources({
+    student: selectedStudent.value || {},
+    weak: primaryWeakPoint(),
+    dimension: primaryDimension(),
+  })
 }
 
 function isEditableAgent(agentId) {
   return editableAgentIds.includes(agentId)
 }
 
-function providerLabel(providerKey) {
-  if (!providerKey) return ''
-  const provider = providerOptions.value.find((item) => item.providerKey === providerKey)
-  return provider?.label || providerKey
-}
-
-function currentAgentProviderKey(agentId) {
-  const providerField = agentProviderFieldMap[agentId]
-  return providerField ? agentOverrides[providerField] || '' : ''
-}
-
 function currentAgentProviderLabel(agentId) {
-  const providerKey = currentAgentProviderKey(agentId)
-  if (providerKey) return providerLabel(providerKey)
-  if (defaultProviderOption.value) return `${providerLabel(defaultProviderKey.value)}（继承默认）`
-  return providerOptions.value.length > 0 ? '跟随系统默认' : '未配置'
+  return buildCurrentAgentProviderLabel(agentId, {
+    agentOverrides,
+    defaultProviderKey: defaultProviderKey.value,
+    providerFieldMap: agentProviderFieldMap,
+    providerOptions: providerOptions.value,
+  })
 }
 
 function providerBindingMode(agentKey) {
-  if (agentOverrides[agentKey]) return '独立覆盖模型'
-  if (defaultProviderKey.value) return '继承页面默认模型'
-  return '跟随系统默认模型'
-}
-
-function buildAgentProviderPayload() {
-  return Object.entries(agentOverrides).reduce((result, [agentKey, providerKey]) => {
-    if (providerKey) result[agentKey] = providerKey
-    return result
-  }, {})
+  return buildProviderBindingMode(agentKey, {
+    agentOverrides,
+    defaultProviderKey: defaultProviderKey.value,
+  })
 }
 
 async function loadProviders() {
@@ -634,220 +570,13 @@ async function loadProviders() {
   }
 }
 
-function findTrace(agentId) {
-  return lastRun.value?.agentTrace?.find((item) => item.agentId === agentId) || null
-}
-
-function buildVideoCover(title, platform, accent = '#2f9b7b') {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#071f1a"/>
-          <stop offset="0.55" stop-color="#12382f"/>
-          <stop offset="1" stop-color="#06120f"/>
-        </linearGradient>
-        <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
-          <path d="M 28 0 L 0 0 0 28" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="1"/>
-        </pattern>
-      </defs>
-      <rect width="640" height="360" rx="24" fill="url(#bg)"/>
-      <rect width="640" height="360" fill="url(#grid)"/>
-      <circle cx="510" cy="70" r="120" fill="${accent}" opacity=".18"/>
-      <rect x="42" y="46" width="140" height="34" rx="17" fill="${accent}" opacity=".9"/>
-      <text x="112" y="69" text-anchor="middle" fill="#ffffff" font-size="18" font-family="Arial, sans-serif" font-weight="700">${platform}</text>
-      <text x="48" y="172" fill="#ffffff" font-size="32" font-family="Arial, sans-serif" font-weight="800">${title.slice(0, 18)}</text>
-      <text x="48" y="218" fill="#b8f3df" font-size="22" font-family="Arial, sans-serif">C 语言知识讲解</text>
-      <polygon points="292,252 292,306 344,279" fill="#ffffff" opacity=".9"/>
-    </svg>
-  `
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`
-}
-
-function buildMockVideoRecommendations(focus = '数组与字符串') {
-  // 后续接入真实视频搜索接口时，保持相同字段结构替换这组本地样例即可。
-  return [
-    {
-      title: 'C语言数组与字符串基础讲解',
-      platform: 'Bilibili',
-      url: 'https://www.bilibili.com/video/BV1m8411m79X/',
-      cover: buildVideoCover('数组与字符串', 'Bilibili', '#2f9b7b'),
-      duration: '16:31',
-      viewCount: '22万',
-      reason: `该视频围绕字符数组、字符串初始化和常见用法展开，适合当前“${focus}”薄弱点的概念补强。`,
-      matchedKnowledgePoints: ['数组', '字符串'],
-    },
-    {
-      title: 'C语言 char 数组与字符串入门',
-      platform: 'Bilibili',
-      url: 'https://www.bilibili.com/video/BV1Bh4y1q7Nt/',
-      cover: buildVideoCover('char 数组与字符串', 'Bilibili', '#3b82f6'),
-      duration: '14:24',
-      viewCount: '课程合集',
-      reason: `课程分集包含 char 数组、字符串表示方式和指针相关内容，适合学生按知识链路复习“${focus}”。`,
-      matchedKnowledgePoints: ['char数组', '字符串表示', '指针'],
-    },
-    {
-      title: 'Arrays of strings in C explained!',
-      platform: 'YouTube',
-      url: 'https://www.youtube.com/watch?v=e7SACGE9hKw',
-      cover: 'https://i.ytimg.com/vi/e7SACGE9hKw/hqdefault.jpg',
-      duration: '11:20',
-      viewCount: '教学视频',
-      reason: '该视频用二维字符数组解释字符串数组，适合补齐数组和字符串组合使用时的理解断点。',
-      matchedKnowledgePoints: ['字符串数组', '二维数组'],
-    },
-    {
-      title: 'String Basics | C Programming Tutorial',
-      platform: 'YouTube',
-      url: 'https://www.youtube.com/watch?v=60OI5tzmkCw',
-      cover: 'https://i.ytimg.com/vi/60OI5tzmkCw/hqdefault.jpg',
-      duration: '13:04',
-      viewCount: '入门讲解',
-      reason: '该视频覆盖 C 字符串基础、初始化和访问方式，可用于学生在字符串基础题上的针对性复习。',
-      matchedKnowledgePoints: ['字符串', '字符数组'],
-    },
-  ]
-}
-
-function normalizeVideoRecommendations(card = {}) {
-  const rows = card.videoAsset?.url
-    ? [card.videoAsset, ...(Array.isArray(card.videoRecommendations) ? card.videoRecommendations : [])]
-    : Array.isArray(card.videoRecommendations)
-    ? card.videoRecommendations
-    : Array.isArray(card.videoConfig?.videoRecommendations)
-      ? card.videoConfig.videoRecommendations
-      : []
-
-  return rows
-    .filter((item) => item?.url && item?.title && isConcreteVideoUrl(item.url))
-    .slice(0, 6)
-    .map((item, index) => ({
-      id: item.id || `${card.draftId || card.id || 'video'}-${index}`,
-      title: item.title,
-      platform: item.platform || 'Bilibili',
-      url: item.url,
-      cover: item.cover || item.coverUrl || buildVideoCover(item.title, item.platform || 'Video'),
-      duration: item.duration || '待确认',
-      viewCount: item.viewCount || item.hotScore || '推荐',
-      reason: item.reason || '该视频与当前薄弱知识点匹配，建议教师确认后推荐给学生。',
-      matchedKnowledgePoints: Array.isArray(item.matchedKnowledgePoints) ? item.matchedKnowledgePoints : [],
-    }))
-}
-
-function normalizeGeneratedCard(card = {}) {
-  const scenes = Array.isArray(card.videoScenes) ? card.videoScenes : []
-  const quizQuestions = Array.isArray(card.quizQuestions) ? card.quizQuestions : []
-  const exerciseQuestions = Array.isArray(card.exerciseQuestions) ? card.exerciseQuestions : []
-  const videoRecommendations = normalizeVideoRecommendations(card)
+function resourceCardContext() {
   return {
-    ...card,
-    id: card.draftId || `${card.resourceType || 'resource'}-${Date.now()}`,
-    sourceAgent: '资源生成智能体',
-    resourceTypeLabel: resourceTypeLabels[card.resourceType] || card.resourceType || '个性化资源',
-    isMultimodal: multimodalResourceTypes.has(card.resourceType),
-    isQuiz: card.resourceType === 'interactive_quiz' || exerciseResourceTypes.has(card.resourceType),
-    isVideo: card.mediaType === 'video' || videoResourceTypes.has(card.resourceType) || scenes.length > 0,
-    videoAsset: card.videoAsset || null,
-    videoScenes: scenes,
-    videoRecommendations,
-    quizQuestions,
-    exerciseQuestions,
-    videoConfig: card.videoConfig || {},
-    sourceStatus: card.sourceStatus || card.videoAsset?.sourceStatus || card.videoConfig?.sourceStatus || 'draft',
-    publishTarget: card.publishTarget || (exerciseResourceTypes.has(card.resourceType) ? 'student_draft_questions' : 'student_recommended_resource'),
-    agentOutputs: card.agentOutputs || {},
-    reviewState: card.reviewState || {
-      suitabilityApproved: false,
-      usabilityApproved: false,
-      teacherComment: '',
-    },
-    saved: Boolean(card.saved),
-    sent: Boolean(card.sent),
-    resourceId: card.resourceId || null,
-    personalizationBasis: card.personalizationBasis || {},
-    reviewReport: card.reviewReport || {},
-    modelSource: card.modelSource || {},
-    content: card.content || card.summary || '',
-    status: card.status || 'pending_review',
+    student: selectedStudent.value || {},
+    weakPoints: weakPoints.value,
+    selectedStudentId: selectedStudentId.value,
+    abilityGaps: lowestDimensions.value,
   }
-}
-
-function buildExternalVideoCard() {
-  const student = selectedStudent.value || {}
-  const focus = weakPoints.value.map((item) => item.tagName).filter(Boolean)[0] || 'C语言薄弱知识点'
-  const query = `C语言 ${focus} 讲解 例题`
-  const encodedQuery = encodeURIComponent(query)
-  const bilibiliUrl = `https://search.bilibili.com/all?keyword=${encodedQuery}`
-  const youtubeUrl = `https://www.youtube.com/results?search_query=${encodedQuery}`
-  const draftId = `knowledge_video-frontend-video-${selectedStudentId.value || 'current'}-${encodedQuery}`
-  const videoRecommendations = buildMockVideoRecommendations(focus)
-  const recommendedVideo = videoRecommendations[0]
-  return normalizeGeneratedCard({
-    draftId,
-    title: `${focus} 知识讲解视频推荐`,
-    resourceType: 'knowledge_video',
-    summary: `系统已根据学生薄弱点匹配具体知识讲解视频，教师可预览、替换或补充视频链接后保存为推荐资源。`,
-    content: [
-      `学生：${student.studentName || '当前学生'}`,
-      `薄弱知识点：${focus}`,
-      `检索关键词：${query}`,
-      '推荐平台：Bilibili / YouTube',
-      '使用建议：优先选择包含概念讲解、例题代码和易错点分析的视频片段。',
-    ].join('\n'),
-    sourceUrl: recommendedVideo?.url || '',
-    mediaType: 'video',
-    videoRecommendations,
-    videoConfig: {
-      renderMode: 'concrete_video_recommendation',
-      platform: recommendedVideo?.platform || 'Bilibili',
-      query,
-      bilibiliUrl,
-      youtubeUrl,
-      sourceStatus: recommendedVideo?.url ? 'matched_sample' : 'fallback',
-      videoRecommendations,
-      style: '外部知识讲解视频',
-      aspectRatio: '16:9',
-    },
-    videoScenes: [],
-    personalizationBasis: {
-      studentName: student.studentName || '当前学生',
-      weakPoints: [focus],
-      reason: '根据学生薄弱知识点匹配具体知识讲解视频。',
-    },
-    reviewReport: {
-      qualityScore: 82,
-      relevanceScore: 88,
-      consistencyScore: 84,
-      passed: true,
-      comments: '已根据学生薄弱点匹配具体知识讲解视频，建议教师确认内容后推荐给学生。',
-      revisionSuggestions: [`确认视频内容覆盖薄弱知识点：${focus}`],
-    },
-    modelSource: {
-      generatorModel: '本地视频资源匹配',
-      llmCallIds: [],
-    },
-    status: 'approved',
-  })
-}
-function hasExternalVideoResource(cards) {
-  return cards.some((card) => videoResourceTypes.has(card.resourceType))
-}
-
-function ensureVideoResource(cards) {
-  if (!cards.length) return cards
-  return hasExternalVideoResource(cards) ? cards : [...cards, buildExternalVideoCard()]
-}
-
-function normalizeGeneratedCards(cards = []) {
-  const normalized = (Array.isArray(cards) ? cards : [])
-    .filter((card) => !deprecatedResourceTypes.has(card?.resourceType))
-    .filter((card) => {
-      const hasRecommendations = Array.isArray(card?.videoRecommendations) && card.videoRecommendations.length > 0
-      return !(videoResourceTypes.has(card?.resourceType) && !card?.sourceUrl && !hasRecommendations && Array.isArray(card?.videoScenes) && card.videoScenes.length > 0)
-    })
-    .map(normalizeGeneratedCard)
-  return ensureVideoResource(normalized)
 }
 
 function videoState(card) {
@@ -886,51 +615,6 @@ function nextVideoScene(card) {
   if (!scenes.length) return
   const state = videoState(card)
   state.sceneIndex = (state.sceneIndex + 1) % scenes.length
-}
-
-function externalVideoLinks(card) {
-  const config = card?.videoConfig || {}
-  return [
-    { label: '打开 Bilibili 搜索', url: config.bilibiliUrl },
-    { label: '打开 YouTube 搜索', url: config.youtubeUrl },
-  ].filter((item) => item.url)
-}
-
-function isVideoSearchUrl(url = '') {
-  const value = String(url || '').trim().toLowerCase()
-  return value.includes('search.bilibili.com') || value.includes('youtube.com/results')
-}
-
-function isConcreteVideoUrl(url = '') {
-  const value = String(url || '').trim()
-  if (!value || isVideoSearchUrl(value)) return false
-  return /^https?:\/\/(www\.)?bilibili\.com\/video\/(BV|av)[A-Za-z0-9]+/i.test(value)
-    || /^https?:\/\/(www\.)?youtube\.com\/watch\?.*v=[A-Za-z0-9_-]+/i.test(value)
-    || /^https?:\/\/youtu\.be\/[A-Za-z0-9_-]+/i.test(value)
-}
-
-function primaryVideo(card) {
-  const candidate = Array.isArray(card?.videoRecommendations) ? card.videoRecommendations.find((item) => isConcreteVideoUrl(item.url)) : null
-  if (candidate) return candidate
-  if (isConcreteVideoUrl(card?.sourceUrl)) {
-    return {
-      title: card.title,
-      platform: card.videoConfig?.platform || 'Video',
-      url: card.sourceUrl,
-      reason: card.summary,
-      matchedKnowledgePoints: card.personalizationBasis?.weakPoints || [],
-    }
-  }
-  return null
-}
-
-function hasConcreteVideo(card) {
-  return Boolean(primaryVideo(card))
-}
-
-function videoSourceStatus(card) {
-  if (hasConcreteVideo(card)) return 'matched'
-  return card?.videoConfig?.sourceStatus || 'fallback'
 }
 
 function openRecommendedVideo(video) {
@@ -998,36 +682,6 @@ async function pasteVideoLink(card) {
   }
 }
 
-function resourceContentForSave(card) {
-  if (card?.isQuiz) {
-    return JSON.stringify({
-      content: card.content || '',
-      quizQuestions: card.quizQuestions || [],
-      exerciseQuestions: card.exerciseQuestions || [],
-      publishTarget: card.publishTarget || '',
-      agentOutputs: card.agentOutputs || {},
-      reviewState: card.reviewState || {},
-    })
-  }
-  if (!card?.isVideo) return card?.content || ''
-  const video = primaryVideo(card)
-  return JSON.stringify({
-    content: card.content || '',
-    mediaType: 'video',
-    platform: video?.platform || card.videoConfig?.platform || '',
-    url: video?.url || card.sourceUrl || '',
-    knowledgePoint: video?.matchedKnowledgePoints?.[0] || card.videoConfig?.query || '',
-    weaknessTag: video?.matchedKnowledgePoints?.[0] || '',
-    reason: video?.reason || card.summary || '',
-    sourceStatus: video?.sourceStatus || card.videoConfig?.sourceStatus || 'matched',
-    videoAsset: card.videoAsset || null,
-    videoConfig: card.videoConfig || {},
-    videoScenes: card.videoScenes || [],
-    videoRecommendations: card.videoRecommendations || [],
-    reviewState: card.reviewState || {},
-  })
-}
-
 function quizAnswerKey(card, index) {
   return `${card.id}-${index}`
 }
@@ -1040,84 +694,16 @@ function setQuizAnswer(card, index, value) {
   quizAnswers[quizAnswerKey(card, index)] = value
 }
 
-function quizDisplayQuestions(card) {
-  if (Array.isArray(card?.exerciseQuestions) && card.exerciseQuestions.length > 0) {
-    return card.exerciseQuestions
-  }
-  return Array.isArray(card?.quizQuestions) ? card.quizQuestions : []
-}
-
-function hasUsableExercise(card) {
-  if (!exerciseResourceTypes.has(card?.resourceType)) return true
-  const questions = quizDisplayQuestions(card)
-  return questions.length > 0 && questions.every((item) => item?.stem && item?.answer && item?.explanation)
-}
-
-function hasTeacherApproval(card) {
-  return Boolean(card?.reviewState?.suitabilityApproved && card?.reviewState?.usabilityApproved)
-}
-
-function canSaveGeneratedResource(card) {
-  if (!hasTeacherApproval(card)) return false
-  if (card?.isVideo && !hasConcreteVideo(card)) return false
-  if (!hasUsableExercise(card)) return false
-  return true
-}
-
-function normalizeAnswer(value) {
-  return String(value || '').trim().replace(/^([A-D])[\s.銆侊紟:锛?]*/i, '$1').toUpperCase()
-}
-
 function isQuizCorrect(card, question, index) {
-  const userAnswer = normalizeAnswer(quizAnswer(card, index))
-  const answer = normalizeAnswer(question?.answer)
-  return Boolean(userAnswer && answer && userAnswer === answer)
+  return isQuizAnswerCorrect(quizAnswer(card, index), question)
 }
 
 function quizFeedback(card, question, index) {
-  const userAnswer = quizAnswer(card, index)
-  if (!userAnswer) return ''
-  return isQuizCorrect(card, question, index)
-    ? question?.explanation || '回答正确。'
-    : question?.wrongFeedback || question?.explanation || '回答不正确，请回到相关知识点重新判断。'
-}
-
-function safeFileName(text) {
-  return String(text || 'personalized-learning-video')
-    .trim()
-    .replace(/[\\/:*?"<>|]+/g, '-')
-    .replace(/\s+/g, '-')
-    .slice(0, 80) || 'personalized-learning-video'
-}
-
-function buildRemotionProps(card) {
-  const student = selectedStudent.value || {}
-  const weakPointNames = weakPoints.value.map((item) => item.tagName).filter(Boolean)
-  const abilityGaps = lowestDimensions.value.map((item) => item.name).filter(Boolean)
-  const scenes = (card.videoScenes || []).map((scene) => ({
-    title: scene.title || '瀛︿範鍦烘櫙',
-    narration: scene.narration || '',
-    visualPrompt: scene.visualPrompt || '',
-    boardText: scene.boardText || scene.title || '',
-    durationSeconds: Math.max(6, Number(scene.durationSeconds || 10)),
-  }))
-
-  return {
-    title: card.title || '知识点讲解视频',
-    studentName: student.studentName || '瀛︾敓',
-    focus: weakPointNames[0] || card.title || '薄弱知识点',
-    weakPoints: weakPointNames,
-    abilityGaps,
-    scenes,
-  }
-}
-
-function remotionPropsFilename(card) {
-  return `${safeFileName(card.title || card.id)}-remotion-props.json`
+  return quizFeedbackText(quizAnswer(card, index), question)
 }
 
 function downloadRemotionProps(card) {
-  const data = buildRemotionProps(card)
+  const data = buildRemotionProps(card, resourceCardContext())
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -1164,7 +750,7 @@ async function generateAgentResources(feedback = '') {
     publishMode: generationConfig.publishMode,
     selectedWeakPoints: generationConfig.selectedWeakPoints,
     providerKey: defaultProviderKey.value || undefined,
-    agentProviderKeys: buildAgentProviderPayload(),
+    agentProviderKeys: buildAgentProviderPayload(agentOverrides),
     teacherRequirement: teacherRequirement.value,
     feedback,
   }
@@ -1245,10 +831,9 @@ async function stopGenerationTask() {
 }
 
 function restoreGenerationTask() {
-  const raw = localStorage.getItem(TASK_STORAGE_KEY)
-  if (!raw) return
+  const saved = readStorageJson(TASK_STORAGE_KEY)
+  if (!saved) return
   try {
-    const saved = JSON.parse(raw)
     if (!saved?.taskId) return
     if (saved.studentId && String(saved.studentId) !== String(selectedStudent.value?.studentId || '')) {
       return
@@ -1267,11 +852,7 @@ function restoreGenerationTask() {
 }
 
 function traceSummary(agentId, fallback) {
-  const trace = findTrace(agentId)
-  if (!trace) return fallback
-  const model = trace.modelName ? `模型：${trace.modelName}` : ''
-  const call = trace.llmCallId ? `调用ID：${trace.llmCallId}` : ''
-  return [trace.summary, model, call].filter(Boolean).join('；') || fallback
+  return buildTraceSummary(lastRun.value, agentId, fallback)
 }
 
 async function completeAgent(agentId) {
@@ -1296,7 +877,7 @@ async function completeAgent(agentId) {
     output = `已按 ${generationConfig.exerciseCount} 题配置生成补救练习与阶段任务。`
   } else if (agentId === 'report') {
     if (String(selectedStudent.value?.studentId).startsWith('DEMO')) {
-      generatedResources.value = normalizeGeneratedCards(buildGeneratedResources())
+      generatedResources.value = normalizeGeneratedCards(buildGeneratedResources(), resourceCardContext())
     } else {
       await generateAgentResources()
     }
@@ -1415,73 +996,44 @@ function animateGeneratedCards() {
 
 async function ensureResourceSaved(card) {
   if (card.saved && card.resourceId) return card.resourceId
-  if (!hasTeacherApproval(card)) {
-    ElMessage.warning('请先完成适用性和可用性审核')
-    return null
-  }
-  if (!hasUsableExercise(card)) {
-    ElMessage.warning('补救练习必须包含题目、答案和解析后才能保存')
-    return null
-  }
-  const video = card.isVideo ? primaryVideo(card) : null
-  if (card.isVideo && !video) {
-    ElMessage.warning('请先补充具体视频播放页链接后再保存')
-    return null
-  }
-  if (card.isVideo && !isConcreteVideoUrl(video.url)) {
-    ElMessage.warning(isVideoSearchUrl(video.url) ? VIDEO_SEARCH_URL_MESSAGE : '请填写具体视频播放页链接')
+  const validation = validateResourceBeforeSave(card, {
+    videoSearchUrlMessage: VIDEO_SEARCH_URL_MESSAGE,
+  })
+  if (!validation.valid) {
+    ElMessage.warning(validation.message)
     return null
   }
   savingId.value = card.id
-  const resourceId = await learningApi.createResource({
-    title: card.isVideo ? video.title : card.title,
-    resourceType: card.isVideo ? 'video' : card.resourceType,
-    url: card.isVideo ? video.url : '',
-    summary: card.isVideo ? video.reason : card.summary,
-    content: resourceContentForSave(card),
-    personalizationBasis: JSON.stringify(card.personalizationBasis || {}),
-    reviewReportJson: JSON.stringify(card.reviewReport || {}),
-    modelSourceJson: JSON.stringify(card.modelSource || {}),
-    auditStatus: card.status || (card.reviewReport?.passed ? 'approved' : 'needs_revision'),
-    knowledgePointId: card.knowledgePointId,
-    tagId: card.tagId,
-  })
+  const resourceId = await learningApi.createResource(buildResourceSavePayload(card, validation.video))
   card.resourceId = resourceId
   card.saved = true
   return resourceId
 }
 
 async function sendResourceToTargets(card, resourceId) {
-  const isClassScope = generationConfig.generationScope === 'class'
-  const targetType = isClassScope ? 'class' : 'student'
-  if (isClassScope && !generationConfig.classId) {
-    ElMessage.warning('请先选择要发送的班级')
-    return
-  }
-  if (!isClassScope && (!selectedStudent.value?.studentId || String(selectedStudent.value.studentId) === String(demoStudent.studentId))) {
-    ElMessage.warning('请先选择真实学生后再发送')
+  const studentId = selectedStudent.value?.studentId
+  const target = buildRecommendTargetPayload({
+    generationScope: generationConfig.generationScope,
+    classId: generationConfig.classId,
+    studentId: studentId && String(studentId) !== String(demoStudent.studentId) ? studentId : undefined,
+  })
+  if (!target.valid) {
+    ElMessage.warning(target.warning)
     return
   }
   sendingId.value = card.id
-  const result = await learningApi.recommendResourceTargets(resourceId, {
-    targetType,
-    classId: isClassScope ? generationConfig.classId : undefined,
-    studentIds: isClassScope ? [] : [Number(selectedStudent.value.studentId)],
-  })
+  const result = await learningApi.recommendResourceTargets(resourceId, target.payload)
   card.sent = true
   const count = result?.targetCount || 0
-  ElMessage.success(isClassScope ? `已发送给班级内 ${count} 名学生` : '已发送给该学生')
+  ElMessage.success(target.targetType === 'class' ? `已发送给班级内 ${count} 名学生` : '已发送给该学生')
 }
 
 async function saveResource(card, options = {}) {
   try {
     if (!card.saved) {
-      const title = options.send ? '保存并发送资源' : '保存资源'
-      const message = options.send
-        ? `确认将“${card.title}”保存到资源库并发送到学生端？`
-        : `确认将“${card.title}”保存到学习资源库？`
-      await ElMessageBox.confirm(message, title, {
-        confirmButtonText: options.send ? '保存并发送' : '保存',
+      const confirm = buildResourceSaveConfirm(card, options)
+      await ElMessageBox.confirm(confirm.message, confirm.title, {
+        confirmButtonText: confirm.confirmButtonText,
         cancelButtonText: '取消',
         type: 'info',
       })
@@ -1519,13 +1071,7 @@ async function reviseResource(card) {
     }
     revisionDraft.value = card
     revisionFeedback.value = value.trim()
-    const feedback = [
-      `教师退回资源：${card.title}`,
-      `当前资源类型：${card.resourceTypeLabel || card.resourceType}`,
-      `当前摘要：${card.summary || ''}`,
-      `当前正文：${card.content || ''}`,
-      `修改意见：${revisionFeedback.value}`,
-    ].join('\n')
+    const feedback = buildRevisionFeedback(card, revisionFeedback.value)
     await generateAgentResources(feedback)
     completedAgents.value = ['preprocess', 'coordinator', 'knowledge', 'ability', 'behavior', 'resource', 'practice', 'report']
     agentOutputs.report = '已根据退回意见重新提交后端生成任务，新的资源草案完成后将自动刷新。'
@@ -1566,7 +1112,7 @@ watch(generatedResources, (rows) => {
     return
   }
   normalizingGeneratedResources = true
-  generatedResources.value = ensureVideoResource(rows)
+  generatedResources.value = ensureVideoResource(rows, resourceCardContext())
   persistWorkspace()
   nextTick(() => {
     normalizingGeneratedResources = false

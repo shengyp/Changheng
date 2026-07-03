@@ -1,0 +1,371 @@
+﻿.goal-system-panel {
+  min-width: 0;
+}
+
+.goal-system-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: #020714;
+  box-shadow: inset 0 0 80px rgba(34, 211, 238, 0.08);
+}
+
+.system-svg {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  min-height: clamp(500px, 48vw, 760px);
+}
+
+.star-field circle {
+  fill: rgba(226, 242, 255, 0.72);
+}
+
+.floor-grid path,
+.analysis-lines path,
+.obe-orb path {
+  fill: none;
+  stroke: rgba(125, 211, 252, 0.24);
+  stroke-width: 1;
+}
+
+.floor-grid path {
+  stroke-dasharray: 5 10;
+}
+
+.top-copy path {
+  fill: rgba(8, 38, 64, 0.78);
+  stroke: rgba(103, 232, 249, 0.34);
+}
+
+.top-copy text,
+.coverage text,
+.obe-orb text,
+.boss-card text,
+.app-label text {
+  fill: #e9fbff;
+  pointer-events: none;
+  font-weight: 800;
+}
+
+.top-copy .title {
+  fill: #fff;
+  font-size: 25px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.top-copy .title tspan,
+.coverage .num,
+.obe-orb text {
+  fill: #67e8f9;
+}
+
+.top-copy text:not(.title) {
+  font-size: 14px;
+  fill: rgba(226, 242, 255, 0.92);
+}
+
+.coverage rect,
+.boss-card rect {
+  fill: rgba(8, 16, 36, 0.72);
+  stroke: rgba(103, 232, 249, 0.58);
+}
+
+.coverage .num {
+  font-size: 29px;
+  font-weight: 900;
+}
+
+.coverage text:not(.num) {
+  font-size: 8px;
+}
+
+.obe-orb circle {
+  filter: url(#strongGlow);
+}
+
+.obe-orb text {
+  text-anchor: middle;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.obe-orb .main {
+  fill: #fff;
+  font-size: 23px;
+  font-weight: 900;
+}
+
+.decor rect,
+.decor circle {
+  fill: rgba(96, 165, 250, 0.44);
+  stroke: rgba(125, 211, 252, 0.78);
+}
+
+.decor path {
+  fill: none;
+  stroke: rgba(125, 211, 252, 0.62);
+}
+
+.server-rack path {
+  fill: rgba(71, 85, 105, 0.2);
+  stroke: rgba(148, 163, 184, 0.34);
+}
+
+.server-rack path:last-child {
+  fill: none;
+  stroke: rgba(103, 232, 249, 0.38);
+}
+
+.data-flows path {
+  fill: none;
+  stroke: url(#flowLine);
+  stroke-linecap: round;
+  stroke-width: 5;
+  stroke-dasharray: 4 12;
+  filter: url(#softGlow);
+  animation: dataFlow 4.4s linear infinite;
+}
+
+.pyramid-shadow {
+  fill: rgba(0, 0, 0, 0.42);
+  filter: blur(6px);
+}
+
+.base-plane {
+  fill: rgba(34, 211, 238, 0.08);
+  stroke: rgba(103, 232, 249, 0.5);
+  stroke-width: 1.4;
+}
+
+.base-plane.inner {
+  fill: rgba(14, 165, 233, 0.05);
+  stroke: rgba(167, 139, 250, 0.34);
+}
+
+.pyramid-layer,
+.callout {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 0.22s ease, filter 0.22s ease, transform 0.22s ease;
+}
+
+.pyramid-layer:hover,
+.pyramid-layer:focus-visible,
+.pyramid-layer.active,
+.callout:hover,
+.callout:focus-visible,
+.callout.active {
+  filter: url(#strongGlow);
+}
+
+.pyramid-layer:hover,
+.pyramid-layer:focus-visible,
+.pyramid-layer.active {
+  transform: translateY(-3px);
+}
+
+.pyramid-layer.muted,
+.callout.muted {
+  opacity: 0.45;
+}
+
+.face {
+  stroke-width: 1.8;
+  paint-order: fill stroke;
+}
+
+.face.teal {
+  fill: url(#tealGlass);
+  stroke: rgba(103, 232, 249, 0.92);
+}
+
+.face.purple {
+  fill: url(#purpleGlass);
+  stroke: rgba(196, 181, 253, 0.86);
+}
+
+.face.cyan {
+  fill: url(#cyanGlass);
+  stroke: rgba(125, 211, 252, 0.94);
+}
+
+.face.gold {
+  fill: url(#goldTop);
+  stroke: rgba(251, 191, 36, 0.92);
+}
+
+.edge {
+  fill: none;
+  stroke: rgba(226, 242, 255, 0.42);
+  stroke-width: 1.3;
+}
+
+.gold-edge {
+  stroke: rgba(251, 191, 36, 0.8);
+}
+
+.cap path {
+  fill: rgba(245, 158, 66, 0.35);
+  stroke: rgba(255, 224, 178, 0.82);
+  stroke-width: 1.4;
+}
+
+.cap circle {
+  fill: #fbbf24;
+  filter: url(#softGlow);
+}
+
+.inside-tech path,
+.inside-tech circle {
+  fill: rgba(8, 16, 36, 0.12);
+  stroke: rgba(186, 230, 253, 0.72);
+  stroke-width: 1.7;
+}
+
+.connector {
+  fill: none;
+  stroke: rgba(226, 242, 255, 0.62);
+  stroke-width: 1.4;
+}
+
+.dot {
+  fill: rgba(226, 242, 255, 0.9);
+  filter: url(#softGlow);
+}
+
+.callout rect {
+  fill: color-mix(in srgb, var(--goal-color, #22d3ee) 26%, rgba(15, 23, 42, 0.9));
+  stroke: color-mix(in srgb, var(--goal-color, #22d3ee) 76%, #ffffff 8%);
+  stroke-width: 1.3;
+}
+
+.callout-title,
+.callout-caption {
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(2, 8, 23, 0.82);
+  stroke-linejoin: round;
+}
+
+.callout-title {
+  fill: #fff;
+  font-size: 16px;
+  font-weight: 900;
+  stroke-width: 3px;
+}
+
+.callout-caption {
+  fill: rgba(226, 242, 255, 0.82);
+  font-size: 10.5px;
+  font-weight: 700;
+  stroke-width: 2px;
+}
+
+.knowledge-card rect {
+  fill: rgba(20, 83, 79, 0.72);
+  stroke: rgba(94, 234, 212, 0.78);
+}
+
+.boss-card rect {
+  stroke: rgba(251, 146, 60, 0.66);
+}
+
+.boss-card .boss-title {
+  fill: #34d399;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.boss-card text:not(.boss-title) {
+  font-size: 9px;
+}
+
+.app-label rect {
+  fill: rgba(69, 54, 122, 0.78);
+  stroke: rgba(196, 181, 253, 0.76);
+}
+
+.app-label text {
+  fill: #fff;
+  font-size: 18px;
+  font-weight: 900;
+  paint-order: stroke;
+  stroke: rgba(2, 8, 23, 0.78);
+  stroke-width: 3px;
+}
+
+.bot circle,
+.bot rect {
+  fill: rgba(103, 232, 249, 0.16);
+  stroke: rgba(125, 211, 252, 0.74);
+  filter: url(#softGlow);
+}
+
+.bot path {
+  fill: none;
+  stroke: rgba(226, 242, 255, 0.74);
+  stroke-width: 2;
+}
+
+.sparkle {
+  fill: rgba(226, 242, 255, 0.68);
+  opacity: 0.72;
+}
+
+.stage-summary rect {
+  fill: rgba(3, 7, 18, 0.52);
+  stroke: rgba(125, 211, 252, 0.16);
+}
+
+.stage-summary text {
+  dominant-baseline: middle;
+  pointer-events: none;
+  font-weight: 800;
+}
+
+.summary-tag {
+  fill: #67e8f9;
+  font-size: 11px;
+}
+
+.summary-name {
+  fill: #fff;
+  font-size: 13px;
+}
+
+.summary-copy {
+  fill: rgba(226, 242, 255, 0.76);
+  font-size: 12px;
+}
+
+@keyframes dataFlow {
+  to {
+    stroke-dashoffset: -110;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .data-flows path {
+    animation: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .goal-system-stage {
+    overflow-x: auto;
+  }
+
+  .system-svg {
+    min-width: 980px;
+  }
+}
+
+@media (max-width: 860px) {
+  .system-svg {
+    min-width: 900px;
+    min-height: 450px;
+  }
+}
