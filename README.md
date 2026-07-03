@@ -81,7 +81,7 @@ backend/database_teacher_agent_resource_upgrade.sql
 
 ### 2. 启动后端
 
-修改 `backend/src/main/resources/application.properties` 中的数据库、JWT 与大模型配置。不要在公开仓库中提交真实数据库密码、JWT secret 或 API Key。
+修改 `backend/src/main/resources/application.properties` 中的数据库、JWT 与大模型配置。
 
 ```powershell
 cd backend
@@ -184,11 +184,4 @@ cd frontend
 npm run build
 ```
 
-## 上线前检查
-
-- 替换 `app.jwt.secret` 为高强度随机字符串。
-- 移除或改用环境变量管理数据库密码、API Key 文件路径等敏感信息。
-- 确认 `app.init.enabled=false`，避免生产环境自动初始化开发账号。
-- 确认 MySQL 字符集为 `utf8mb4`。
-- 不要提交 `node_modules/`、日志文件、浏览器临时目录和本地密钥文件。
 
