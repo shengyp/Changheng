@@ -162,6 +162,16 @@ const trendAreaPath = computed(() => {
 const trendSummary = computed(() => {
   const raw = Array.isArray(report.value.scoreTrend) ? report.value.scoreTrend.slice(-5) : []
   const scores = raw.map((item) => clamp(Number(item.score) || 0, 0, 100))
+  if (!scores.length) {
+    return {
+      trend: '暂无',
+      highest: '待更新',
+      latest: '待更新',
+      delta: 0,
+      reason: '完成一次试卷或练习后，系统会生成最近画像趋势。',
+      advice: '先完成一次阶段测评或专项练习，用真实作答数据更新画像。',
+    }
+  }
   const first = scores[0] ?? 0
   const latest = scores[scores.length - 1] ?? 0
   const highest = scores.length ? Math.max(...scores) : 0
@@ -432,12 +442,12 @@ function goRecord(record) {
 function normalizeReport(data = {}) {
   const fallback = buildFallbackReport()
   const cached = loadCachedReport()
-  const incomingRecords = Array.isArray(data.records) && data.records.length ? data.records : cached?.records || fallback.records
+  const incomingRecords = Array.isArray(data.records) ? data.records : cached?.records || fallback.records
   return {
     summary: { ...fallback.summary, ...(data.summary || {}) },
     radar: Array.isArray(data.radar) && data.radar.length ? data.radar : fallback.radar,
     insights: Array.isArray(data.insights) && data.insights.length ? data.insights : fallback.insights,
-    scoreTrend: Array.isArray(data.scoreTrend) && data.scoreTrend.length ? data.scoreTrend : fallback.scoreTrend,
+    scoreTrend: Array.isArray(data.scoreTrend) ? data.scoreTrend : fallback.scoreTrend,
     evaluationDistribution:
       Array.isArray(data.evaluationDistribution) && data.evaluationDistribution.length
         ? data.evaluationDistribution
@@ -904,7 +914,7 @@ onBeforeUnmount(() => {
             <span class="record-main">
               <span class="record-title-line">
                 <strong>{{ record.title }}</strong>
-                <i>{{ record.profileStatus }}</i>
+                <i>{{ record.profileStatus }}{{ record.impactEstimated ? '·影响估算' : '' }}</i>
               </span>
               <em>{{ record.summary }}</em>
               <span class="record-impact-tags">
@@ -914,7 +924,7 @@ onBeforeUnmount(() => {
               </span>
             </span>
             <span class="record-meta">
-              <strong v-if="record.score !== null && record.score !== undefined">{{ record.score }}</strong>
+              <strong v-if="record.scoreLabel">{{ record.scoreLabel }}</strong>
               <em>{{ record.time }}</em>
             </span>
           </button>
@@ -970,7 +980,7 @@ onBeforeUnmount(() => {
               <p class="records-side-text">{{ latestAttemptRecord.summary }}</p>
               <div class="records-side-meta">
                 <span>{{ latestAttemptRecord.time }}</span>
-                <strong v-if="latestAttemptRecord.score !== null && latestAttemptRecord.score !== undefined">{{ latestAttemptRecord.score }}</strong>
+                <strong v-if="latestAttemptRecord.scoreLabel">{{ latestAttemptRecord.scoreLabel }}</strong>
               </div>
               <p class="records-side-note">已纳入画像评分</p>
             </template>
@@ -1055,7 +1065,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="activeRecord.score !== null && activeRecord.score !== undefined">
             <dt>得分</dt>
-            <dd>{{ activeRecord.score }}</dd>
+            <dd>{{ activeRecord.scoreLabel || activeRecord.score }}</dd>
           </div>
           <div>
             <dt>画像影响</dt>

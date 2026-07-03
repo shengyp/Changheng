@@ -1,11 +1,20 @@
 export function formatStudentRecordForDisplay(record = {}, options = {}) {
   const type = record.type || 'record'
-  const scoreText = record.score !== null && record.score !== undefined ? `本次得分 ${record.score} 分，已纳入知识画像分析。` : ''
+  const scoreText = record.score !== null && record.score !== undefined
+    ? `本次得分 ${formatRecordScore(record)}，已纳入知识画像分析。`
+    : ''
+  const impactChanges = Array.isArray(record.impactChanges) && record.impactChanges.length
+    ? record.impactChanges
+    : buildRecordImpactChanges(record)
   const base = {
     originalKey: options.recordKey ? options.recordKey(record) : defaultRecordKey(record),
-    profileStatus: '已纳入画像',
-    impactDimensions: buildRecordImpactDimensions(record),
-    impactChanges: buildRecordImpactChanges(record),
+    profileStatus: record.profileStatus || '已纳入画像',
+    impactDimensions: Array.isArray(record.impactDimensions) && record.impactDimensions.length
+      ? record.impactDimensions
+      : buildRecordImpactDimensions(record),
+    impactChanges,
+    impactEstimated: !(Array.isArray(record.impactChanges) && record.impactChanges.length),
+    scoreLabel: record.score !== null && record.score !== undefined ? formatRecordScore(record) : '',
     relatedKnowledge: inferRelatedKnowledge(record, options.fallbackKnowledge),
   }
   if (type === 'assistant') {
@@ -56,6 +65,15 @@ export function formatStudentRecordForDisplay(record = {}, options = {}) {
     primaryAction: '查看详情',
     secondaryAction: '查看画像影响',
   }
+}
+
+export function formatRecordScore(record = {}) {
+  const score = record.score
+  const maxScore = record.maxScore
+  if (score !== null && score !== undefined && maxScore !== null && maxScore !== undefined && Number(maxScore) > 0) {
+    return `${score} / ${maxScore}`
+  }
+  return `${score} 分`
 }
 
 export function buildRecordImpactDimensions(record = {}) {

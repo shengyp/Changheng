@@ -127,14 +127,20 @@ public interface QbAttemptMapper {
 
     @Select({
             "<script>",
-            "SELECT *",
-            "FROM qb_attempt",
-            "WHERE user_id = #{userId}",
-            "  AND status IN (2,3,4)",
+            "SELECT t.*,",
+            "       COALESCE(p.total_score, (",
+            "         SELECT COALESCE(SUM(aq.score), 0)",
+            "         FROM qb_attempt_question aq",
+            "         WHERE aq.attempt_id = t.id",
+            "       )) AS max_score",
+            "FROM qb_attempt t",
+            "LEFT JOIN qb_paper p ON p.id = t.paper_id",
+            "WHERE t.user_id = #{userId}",
+            "  AND t.status IN (2,3,4)",
             "<if test='attemptType != null'>",
-            "  AND attempt_type = #{attemptType}",
+            "  AND t.attempt_type = #{attemptType}",
             "</if>",
-            "ORDER BY COALESCE(submitted_at, updated_at, created_at) DESC, id DESC",
+            "ORDER BY COALESCE(t.submitted_at, t.updated_at, t.created_at) DESC, t.id DESC",
             "LIMIT #{limit}",
             "</script>"
     })

@@ -356,7 +356,7 @@ public class SmartLearningService {
         long behaviorCount = profile.getBehaviorCount() == null ? 0 : profile.getBehaviorCount();
         long studyMinutes = Math.round((profile.getStudyDurationSeconds() == null ? 0 : profile.getStudyDurationSeconds()) / 60.0);
         int attemptAvg = averageAttemptScore(attempts);
-        int recentAttempt = attempts.isEmpty() ? attemptAvg : scoreOf(attempts.get(0));
+        int recentAttempt = attempts.isEmpty() ? attemptAvg : attemptPercentScore(attempts.get(0));
         int weakPenalty = Math.min(profile.getWeakPoints() == null ? 0 : profile.getWeakPoints().size() * 4, 24);
         AssistantSignals signals = analyzeAssistantSignals(assistantCalls);
         int scoringBoost = scoringItemAnalysis == null ? 0 : Math.round((float) (scoringItemAnalysis.averageRate() - 60) / 10);
@@ -402,7 +402,7 @@ public class SmartLearningService {
         } else {
             QbAttempt latest = attempts.get(0);
             insights.add(insight("attempt", "最新作答已纳入画像",
-                    attemptTypeLabel(latest.getAttemptType()) + "得分 " + scoreOf(latest) + "，系统已将其计入得分趋势和能力分布。"));
+                    attemptTypeLabel(latest.getAttemptType()) + "得分 " + attemptScoreText(latest) + "，系统已将其计入得分趋势和能力分布。"));
         }
         if (assistantCalls.isEmpty()) {
             insights.add(insight("assistant", "小C对话样本不足", "通过小C描述目标、困惑和复盘过程后，画像会实时更新表达、资源筛选和错题反思维度。"));
@@ -423,7 +423,9 @@ public class SmartLearningService {
                     TrendPoint point = new TrendPoint();
                     LocalDateTime time = attemptTime(attempt);
                     point.setDate(time == null ? "未记录" : MONTH_DAY.format(time));
-                    point.setScore(scoreOf(attempt));
+                    point.setScore(attemptPercentScore(attempt));
+                    point.setRawScore(scoreOf(attempt));
+                    point.setMaxScore(attemptMaxScore(attempt));
                     point.setSourceType(attempt.getAttemptType() != null && attempt.getAttemptType() == 2 ? "practice" : "exam");
                     point.setAttemptId(attempt.getId());
                     return point;
@@ -538,7 +540,7 @@ public class SmartLearningService {
     private List<ScoringItem> buildFallbackScoringItems(List<QbAttempt> attempts) {
         double average = attempts == null || attempts.isEmpty()
                 ? 0
-                : attempts.stream().mapToInt(this::scoreOf).average().orElse(0);
+                : attempts.stream().mapToInt(this::attemptPercentScore).average().orElse(0);
         return SCORING_DEFINITIONS.stream().map(def -> {
             double rate = attempts == null || attempts.isEmpty() ? 0 : Math.max(0, Math.min(100, average * def.factor));
             ScoringItem item = new ScoringItem();
@@ -628,11 +630,13 @@ public class SmartLearningService {
             record.setTitle(attemptTypeLabel(attempt.getAttemptType()) + " #" + attempt.getId());
             record.setTime(format(attemptTime(attempt)));
             record.setScore(scoreOf(attempt));
-            record.setSummary("总分 " + scoreOf(attempt) + "，客观分 " + value(attempt.getObjectiveScore()) + "，主观分 " + value(attempt.getSubjectiveScore()));
+            record.setMaxScore(attemptMaxScore(attempt));
+            record.setScoreRate(attemptPercentScore(attempt));
+            record.setSummary("得分 " + attemptScoreText(attempt) + "，客观分 " + value(attempt.getObjectiveScore()) + "，主观分 " + value(attempt.getSubjectiveScore()));
             record.setRefId(attempt.getId());
             record.setDetail("记录编号：" + attempt.getId()
                     + "\n记录类型：" + attemptTypeLabel(attempt.getAttemptType())
-                    + "\n总分：" + scoreOf(attempt)
+                    + "\n得分：" + attemptScoreText(attempt)
                     + "\n客观分：" + value(attempt.getObjectiveScore())
                     + "\n主观分：" + value(attempt.getSubjectiveScore())
                     + "\n提交时间：" + format(attemptTime(attempt)));
@@ -691,11 +695,30 @@ public class SmartLearningService {
         if (attempts == null || attempts.isEmpty()) {
             return 58;
         }
-        return clamp((int) Math.round(attempts.stream().mapToInt(this::scoreOf).average().orElse(58)));
+        return clamp((int) Math.round(attempts.stream().mapToInt(this::attemptPercentScore).average().orElse(58)));
     }
 
     private int scoreOf(QbAttempt attempt) {
         return clamp(attempt == null || attempt.getTotalScore() == null ? 0 : attempt.getTotalScore());
+    }
+
+    private int attemptPercentScore(QbAttempt attempt) {
+        int score = scoreOf(attempt);
+        int maxScore = attemptMaxScore(attempt);
+        if (maxScore <= 0) {
+            return score;
+        }
+        return clamp((int) Math.round(score * 100.0 / maxScore));
+    }
+
+    private int attemptMaxScore(QbAttempt attempt) {
+        return attempt == null || attempt.getMaxScore() == null ? 0 : Math.max(0, attempt.getMaxScore());
+    }
+
+    private String attemptScoreText(QbAttempt attempt) {
+        int score = scoreOf(attempt);
+        int maxScore = attemptMaxScore(attempt);
+        return maxScore > 0 ? score + " / " + maxScore : score + " 分";
     }
 
     private int clamp(int value) {
@@ -902,7 +925,7 @@ public class SmartLearningService {
                                                 String stage,
                                                 String goal,
                                                 List<QbAttempt> attempts) {
-        int latestScore = attempts == null || attempts.isEmpty() ? 0 : scoreOf(attempts.get(0));
+        int latestScore = attempts == null || attempts.isEmpty() ? 0 : attemptPercentScore(attempts.get(0));
         String primaryProblem = extractPrimaryProblem(report, profile);
         StudentPathSummary summary = new StudentPathSummary();
         summary.setProfileScore(report.getSummary() == null ? 0 : report.getSummary().getProfileScore());
@@ -964,12 +987,12 @@ public class SmartLearningService {
 
         int examAverage = attempts.stream()
                 .filter(item -> Objects.equals(item.getAttemptType(), 1))
-                .mapToInt(this::scoreOf)
+                .mapToInt(this::attemptPercentScore)
                 .findFirst()
                 .orElse(attempts.isEmpty() ? 0 : averageAttemptScore(attempts));
         int practiceAverage = attempts.stream()
                 .filter(item -> Objects.equals(item.getAttemptType(), 2))
-                .mapToInt(this::scoreOf)
+                .mapToInt(this::attemptPercentScore)
                 .findFirst()
                 .orElse(attempts.isEmpty() ? 0 : averageAttemptScore(attempts));
         sections.add(section("作题与考试", List.of(
@@ -1033,7 +1056,7 @@ public class SmartLearningService {
         strategy.setMode(mode);
         strategy.setLabel(strategyLabel(mode));
         strategy.setTargetCycle(stageLabel(stage) + " / " + days + "天");
-        strategy.setPriority(priorityLabel(report.getSummary() == null ? 0 : report.getSummary().getProfileScore(), attempts.isEmpty() ? 0 : scoreOf(attempts.get(0))));
+        strategy.setPriority(priorityLabel(report.getSummary() == null ? 0 : report.getSummary().getProfileScore(), attempts.isEmpty() ? 0 : attemptPercentScore(attempts.get(0))));
         strategy.setReason(buildStrategyReason(mode, weakPoints, report, assistantCalls));
         strategy.setRoutingBasis(buildRoutingBasis(mode, weakPoints, report, attempts));
         strategy.setGoals(buildStrategyGoals(mode, weakPoints));
@@ -1312,7 +1335,7 @@ public class SmartLearningService {
 
     private List<String> buildExamRisks(List<QbAttempt> attempts, StudentProfileReport report) {
         List<String> risks = new ArrayList<>();
-        int latest = attempts.isEmpty() ? 0 : scoreOf(attempts.get(0));
+        int latest = attempts.isEmpty() ? 0 : attemptPercentScore(attempts.get(0));
         int average = averageAttemptScore(attempts);
         if (!attempts.isEmpty() && latest + 8 < average) risks.add("最近一次成绩低于近期均值，存在波动风险");
         if (report.getScoringItemAnalysis() != null && StringUtils.hasText(report.getScoringItemAnalysis().getWeakestItem())) {
@@ -1606,6 +1629,8 @@ public class SmartLearningService {
     public static class TrendPoint {
         private String date;
         private Integer score;
+        private Integer rawScore;
+        private Integer maxScore;
         private String sourceType;
         private Long attemptId;
     }
@@ -1616,6 +1641,8 @@ public class SmartLearningService {
         private String title;
         private String time;
         private Integer score;
+        private Integer maxScore;
+        private Integer scoreRate;
         private String summary;
         private Long refId;
         private String detail;

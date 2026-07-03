@@ -19,6 +19,7 @@ public class QbAttempt {
     private LocalDateTime submittedAt;
     private Integer durationSec;
     private Integer totalScore;
+    private Integer maxScore;
     private Integer objectiveScore;
     private Integer subjectiveScore;
     private Integer needsReview;
