@@ -12,6 +12,19 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  build: {
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vue: ['vue', 'vue-router', 'pinia'],
+          element: ['element-plus', '@element-plus/icons-vue'],
+          echarts: ['echarts'],
+          animation: ['gsap'],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/api/models': {

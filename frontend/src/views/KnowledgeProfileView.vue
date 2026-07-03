@@ -12,17 +12,17 @@ import {
   View,
 } from '@element-plus/icons-vue'
 import { gsap } from 'gsap'
+import { BarChart, LineChart, RadarChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent } from 'echarts/components'
+import { graphic, init, use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
 import { learningApi } from '@/api/services'
 import {
   buildFallbackReport,
-  buildTrendPath,
   clamp,
   dimensionMeta,
   levelText,
-  normalizeTrend,
-  radarPoint,
   recordTypeText,
-  scoreRadarPoint,
 } from '@/features/knowledge-profile/profileReport'
 import {
   formatStudentRecordForDisplay,
@@ -31,14 +31,19 @@ import {
 } from '@/features/knowledge-profile/profileRecords'
 import { useStudentAssistantStore } from '@/stores/studentAssistant'
 
+use([RadarChart, LineChart, BarChart, GridComponent, TooltipComponent, CanvasRenderer])
+
 const router = useRouter()
 const assistant = useStudentAssistantStore()
 
 const pageRef = ref(null)
-const radarPolygonRef = ref(null)
+const radarChartRef = ref(null)
+const trendChartRef = ref(null)
+const dimensionRadarChartRef = ref(null)
+const scoringBarChartRef = ref(null)
+const scoringRadarChartRef = ref(null)
 const loading = ref(false)
 const refreshing = ref(false)
-const selectedDimension = ref('知识基础')
 const activeRecord = ref(null)
 const detailOpen = ref(false)
 const recordFilter = ref('all')
@@ -54,6 +59,11 @@ const deletedRecordKeys = ref([])
 let gsapContext = null
 let mediaContext = null
 let refreshTimer = null
+let radarChart = null
+let trendChart = null
+let dimensionRadarChart = null
+let scoringBarChart = null
+let scoringRadarChart = null
 
 const summaryCards = computed(() => {
   const summary = report.value.summary || {}
@@ -82,10 +92,6 @@ const radarDimensions = computed(() => {
     score: clamp(Number(item.score) || 0, 0, 100),
     ...(dimensionMeta[item.name] || { color: '#64748b', desc: '持续收集数据中。', action: '继续完成学习任务。' }),
   }))
-})
-
-const activeDimension = computed(() => {
-  return radarDimensions.value.find((item) => item.name === selectedDimension.value) || radarDimensions.value[0]
 })
 
 const strongestDimension = computed(() => [...radarDimensions.value].sort((a, b) => b.score - a.score)[0])
@@ -150,15 +156,6 @@ const insights = computed(() => {
   return [...list.slice(0, 3).map((item) => ({ ...item, description: sanitizeStudentText(item.description), priority: item.priority || '诊断' })), ...generated.slice(1, 4)]
 })
 
-const trendPoints = computed(() => normalizeTrend(report.value.scoreTrend || []))
-const trendPath = computed(() => buildTrendPath(trendPoints.value))
-const trendAreaPath = computed(() => {
-  if (!trendPath.value) return ''
-  const last = trendPoints.value[trendPoints.value.length - 1]
-  const first = trendPoints.value[0]
-  if (!first || !last) return ''
-  return `${trendPath.value} L ${last.x} 180 L ${first.x} 180 Z`
-})
 const trendSummary = computed(() => {
   const raw = Array.isArray(report.value.scoreTrend) ? report.value.scoreTrend.slice(-5) : []
   const scores = raw.map((item) => clamp(Number(item.score) || 0, 0, 100))
@@ -207,25 +204,6 @@ const scoringItems = computed(() => {
   return Array.isArray(activeScoringAnalysis.value?.items) ? activeScoringAnalysis.value.items : []
 })
 
-const scoringRadarGrid = computed(() => [0.25, 0.5, 0.75, 1].map((scale) => {
-  return scoringItems.value.map((_, index) => {
-    const point = scoreRadarPoint(102 * scale, index, scoringItems.value.length)
-    return `${point.x},${point.y}`
-  }).join(' ')
-}))
-
-const scoringRadarAxis = computed(() => scoringItems.value.map((_, index) => scoreRadarPoint(102, index, scoringItems.value.length)))
-const scoringRadarPoints = computed(() => scoringItems.value.map((item, index) => ({
-  ...item,
-  scoreRate: clamp(Number(item.scoreRate) || 0, 0, 100),
-  ...scoreRadarPoint((102 * clamp(Number(item.scoreRate) || 0, 0, 100)) / 100, index, scoringItems.value.length),
-})))
-const scoringRadarPolygon = computed(() => scoringRadarPoints.value.map((point) => `${point.x},${point.y}`).join(' '))
-const scoringRadarLabels = computed(() => scoringItems.value.map((item, index) => ({
-  ...item,
-  ...scoreRadarPoint(122, index, scoringItems.value.length),
-  anchor: index === 0 ? 'middle' : index > 0 && index < scoringItems.value.length / 2 ? 'start' : 'end',
-})))
 const diagnosisSummary = computed(() => {
   const items = scoringItems.value.length
     ? scoringItems.value.map((item) => ({ name: item.name, score: clamp(Number(item.scoreRate) || 0, 0, 100) }))
@@ -280,6 +258,13 @@ const latestAssistantRecord = computed(() => {
     || (Array.isArray(report.value.records) ? report.value.records.find((item) => item.type === 'assistant') : null)
   return source ? displayRecord(source) : null
 })
+
+const recentTimelineRecords = computed(() => {
+  return [latestAttemptRecord.value, latestAssistantRecord.value]
+    .filter(Boolean)
+    .sort((left, right) => String(right.time || '').localeCompare(String(left.time || '')))
+})
+
 const evidenceAdvice = computed(() => {
   const weak = weakestDimensions.value[0]?.name || '知识基础'
   if (latestAttemptRecord.value && latestAssistantRecord.value) {
@@ -423,11 +408,6 @@ function scheduleRefresh() {
   }, 360)
 }
 
-function selectDimension(name) {
-  selectedDimension.value = name
-  animateDimensionFocus()
-}
-
 function openRecord(record) {
   activeRecord.value = record ? { ...record } : null
   detailOpen.value = true
@@ -457,24 +437,314 @@ function normalizeReport(data = {}) {
   }
 }
 
-const radarGrid = computed(() => [0.2, 0.4, 0.6, 0.8, 1].map((scale) => {
-  return radarDimensions.value.map((_, index) => {
-    const p = radarPoint(126 * scale, index, radarDimensions.value.length)
-    return `${p.x},${p.y}`
-  }).join(' ')
-}))
+function initCharts() {
+  if (radarChart && radarChartRef.value && radarChart.getDom() !== radarChartRef.value) {
+    radarChart.dispose()
+    radarChart = null
+  }
+  if (trendChart && trendChartRef.value && trendChart.getDom() !== trendChartRef.value) {
+    trendChart.dispose()
+    trendChart = null
+  }
+  if (dimensionRadarChart && dimensionRadarChartRef.value && dimensionRadarChart.getDom() !== dimensionRadarChartRef.value) {
+    dimensionRadarChart.dispose()
+    dimensionRadarChart = null
+  }
+  if (scoringBarChart && (!scoringBarChartRef.value || scoringBarChart.getDom() !== scoringBarChartRef.value)) {
+    scoringBarChart.dispose()
+    scoringBarChart = null
+  }
+  if (scoringRadarChart && scoringRadarChartRef.value && scoringRadarChart.getDom() !== scoringRadarChartRef.value) {
+    scoringRadarChart.dispose()
+    scoringRadarChart = null
+  }
+  if (radarChartRef.value && !radarChart) {
+    radarChart = init(radarChartRef.value)
+  }
+  if (trendChartRef.value && !trendChart) {
+    trendChart = init(trendChartRef.value)
+  }
+  if (dimensionRadarChartRef.value && !dimensionRadarChart) {
+    dimensionRadarChart = init(dimensionRadarChartRef.value)
+  }
+  if (scoringBarChartRef.value && !scoringBarChart) {
+    scoringBarChart = init(scoringBarChartRef.value)
+  }
+  if (scoringRadarChartRef.value && !scoringRadarChart) {
+    scoringRadarChart = init(scoringRadarChartRef.value)
+  }
+  updateCharts()
+}
 
-const radarAxis = computed(() => radarDimensions.value.map((_, index) => radarPoint(126, index, radarDimensions.value.length)))
-const radarDataPoints = computed(() => radarDimensions.value.map((item, index) => ({
-  ...item,
-  ...radarPoint(126 * item.score / 100, index, radarDimensions.value.length),
-})))
-const radarPolygon = computed(() => radarDataPoints.value.map((point) => `${point.x},${point.y}`).join(' '))
-const radarLabels = computed(() => radarDimensions.value.map((item, index) => ({
-  ...item,
-  ...radarPoint(154, index, radarDimensions.value.length),
-  anchor: index === 0 || index === 4 ? 'middle' : index > 0 && index < 4 ? 'start' : 'end',
-})))
+function updateCharts() {
+  updateRadarChart()
+  updateTrendChart()
+  updateDimensionRadarChart()
+  updateScoringBarChart()
+  updateScoringRadarChart()
+}
+
+function updateRadarChart() {
+  if (!radarChart) return
+  const dimensions = radarDimensions.value
+  radarChart.setOption({
+    color: ['#0f766e'],
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      formatter: () => dimensions.map((item) => {
+        const advice = item.action || '继续补充学习证据。'
+        return `${item.name}：${item.score} 分<br/>建议：${advice}`
+      }).join('<br/><br/>'),
+    },
+    radar: {
+      center: ['50%', '50%'],
+      radius: '68%',
+      indicator: dimensions.map((item) => ({ name: item.name, max: 100 })),
+      splitNumber: 5,
+      axisName: {
+        color: '#334155',
+        fontWeight: 700,
+        fontSize: 12,
+      },
+      axisLine: { lineStyle: { color: 'rgba(100, 116, 139, 0.22)' } },
+      splitLine: { lineStyle: { color: 'rgba(15, 118, 110, 0.18)' } },
+      splitArea: {
+        areaStyle: {
+          color: ['rgba(20, 184, 166, 0.06)', 'rgba(37, 99, 235, 0.04)'],
+        },
+      },
+    },
+    series: [{
+      type: 'radar',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 7,
+      lineStyle: { width: 3, color: '#0f766e' },
+      areaStyle: {
+        color: new graphic.RadialGradient(0.5, 0.5, 0.8, [
+          { offset: 0, color: 'rgba(56, 189, 248, 0.34)' },
+          { offset: 1, color: 'rgba(15, 118, 110, 0.08)' },
+        ]),
+      },
+      itemStyle: { color: '#0f766e', borderColor: '#ffffff', borderWidth: 2 },
+      data: [{ value: dimensions.map((item) => item.score), name: '学习特征' }],
+    }],
+  })
+}
+
+function updateDimensionRadarChart() {
+  if (!dimensionRadarChart) return
+  const dimensions = radarDimensions.value
+  dimensionRadarChart.setOption({
+    color: ['#14b8a6'],
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      formatter: () => dimensions.map((item) => `${item.name}：${item.score} 分`).join('<br/>'),
+    },
+    radar: {
+      center: ['50%', '50%'],
+      radius: '62%',
+      indicator: dimensions.map((item) => ({ name: item.name, max: 100 })),
+      splitNumber: 4,
+      axisName: { color: '#64748b', fontSize: 18 , fontweight: 'bold'},
+      axisLine: { lineStyle: { color: 'rgba(100, 116, 139, 0.2)' } },
+      splitLine: { lineStyle: { color: 'rgba(15, 118, 110, 0.15)' } },
+      splitArea: {
+        areaStyle: {
+          color: ['rgba(240, 253, 250, 0.9)', 'rgba(255, 255, 255, 0.9)'],
+        },
+      },
+    },
+    series: [{
+      type: 'radar',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 5,
+      lineStyle: { width: 2, color: '#14b8a6' },
+      areaStyle: { color: 'rgba(20, 184, 166, 0.16)' },
+      itemStyle: { color: '#14b8a6' },
+      data: [{ value: dimensions.map((item) => item.score), name: '画像维度' }],
+    }],
+  })
+}
+
+function updateTrendChart() {
+  if (!trendChart) return
+  const points = Array.isArray(report.value.scoreTrend) ? report.value.scoreTrend.slice(-5) : []
+  trendChart.setOption({
+    grid: { left: 34, right: 22, top: 28, bottom: 32 },
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      formatter: (params) => {
+        const item = params?.[0]
+        if (!item) return ''
+        const raw = points[item.dataIndex]
+        const source = raw?.sourceType === 'practice' ? '练习' : '试卷'
+        const rawScore = raw?.rawScore !== undefined && raw?.maxScore ? `<br/>原始得分：${raw.rawScore} / ${raw.maxScore}` : ''
+        return `${source} ${raw?.date || item.axisValue}<br/>画像得分：${item.value}${rawScore}`
+      },
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: points.map((item) => item.date || '未记录'),
+      axisLine: { lineStyle: { color: '#cbd5e1' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#64748b' , fontSize: 14, fontweight: 'bold'},
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: 100,
+      splitNumber: 4,
+      axisLabel: { color: '#64748b' , fontSize: 14, fontweight: 'bold'},
+      splitLine: { lineStyle: { color: '#e2e8f0' } },
+    },
+    series: [{
+      name: '画像得分',
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 8,
+      data: points.map((item) => clamp(Number(item.score) || 0, 0, 100)),
+      lineStyle: { width: 3, color: '#0f766e' },
+      itemStyle: { color: '#0f766e', borderColor: '#ffffff', borderWidth: 2 },
+      areaStyle: {
+        color: new graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(20, 184, 166, 0.26)' },
+          { offset: 1, color: 'rgba(20, 184, 166, 0.02)' },
+        ]),
+      },
+    }],
+  })
+}
+
+function updateScoringRadarChart() {
+  if (!scoringRadarChart) return
+  const items = scoringItems.value
+  scoringRadarChart.setOption({
+    color: ['#8b5cf6'],
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      formatter: () => items.map((item) => `${item.name}：${clamp(Number(item.scoreRate) || 0, 0, 100)}%`).join('<br/>'),
+    },
+    radar: {
+      center: ['50%', '50%'],
+      radius: '58%',
+      indicator: items.map((item) => ({ name: item.name, max: 100 })),
+      splitNumber: 4,
+      axisName: { color: '#64748b', fontSize: 18 , fontweight: 'bold'},
+      axisLine: { lineStyle: { color: 'rgba(100, 116, 139, 0.2)' } },
+      splitLine: { lineStyle: { color: 'rgba(139, 92, 246, 0.16)' } },
+      splitArea: {
+        areaStyle: {
+          color: ['rgba(245, 243, 255, 0.9)', 'rgba(255, 255, 255, 0.9)'],
+        },
+      },
+    },
+    series: [{
+      type: 'radar',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 5,
+      lineStyle: { width: 2, color: '#8b5cf6' },
+      areaStyle: { color: 'rgba(139, 92, 246, 0.18)' },
+      itemStyle: { color: '#8b5cf6' },
+      data: [{ value: items.map((item) => clamp(Number(item.scoreRate) || 0, 0, 100)), name: '评分项' }],
+    }],
+  })
+}
+
+function updateScoringBarChart() {
+  if (!scoringBarChart) return
+  const items = scoringItems.value
+  scoringBarChart.setOption({
+    color: ['#7c3aed'],
+    grid: { left: 42, right: 20, top: 48, bottom: 86 },
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      axisPointer: { type: 'shadow' },
+      formatter: (params) => {
+        const item = params?.[0]
+        if (!item) return ''
+        return `${item.name}<br/>得分率：${item.value}%`
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: items.map((item) => item.name),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        color: '#475569',
+        fontWeight: 'bold',
+        fontSize: 13,
+        interval: 0,
+        width: 80,
+        overflow: 'break',
+      },
+    },
+    yAxis: {
+      type: 'value',
+      max: 100,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: '#64748b', fontSize: 12 },
+      splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } },
+    },
+    series: [{
+      name: '得分率',
+      type: 'bar',
+      barWidth: 20,
+      showBackground: true,
+      backgroundStyle: {
+        color: '#f1f5f9',
+        borderRadius: 6,
+      },
+      itemStyle: {
+        borderRadius: 6,
+        color: new graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: '#a78bfa' },
+          { offset: 1, color: '#7c3aed' },
+        ]),
+      },
+      label: {
+        show: true,
+        position: 'top',
+        formatter: '{c}%',
+        color: '#1e293b',
+        fontWeight: 'bold',
+      },
+      data: items.map((item) => clamp(Number(item.scoreRate) || 0, 0, 100)),
+    }],
+  })
+}
+
+function resizeCharts() {
+  radarChart?.resize()
+  trendChart?.resize()
+  dimensionRadarChart?.resize()
+  scoringBarChart?.resize()
+  scoringRadarChart?.resize()
+}
+
+function disposeCharts() {
+  radarChart?.dispose()
+  trendChart?.dispose()
+  dimensionRadarChart?.dispose()
+  scoringBarChart?.dispose()
+  scoringRadarChart?.dispose()
+  radarChart = null
+  trendChart = null
+  dimensionRadarChart = null
+  scoringBarChart = null
+  scoringRadarChart = null
+}
 
 function animateIntro() {
   if (!pageRef.value) return
@@ -493,6 +763,7 @@ function animateIntro() {
           duration: 0.56,
           ease: 'power2.out',
           stagger: 0.055,
+          clearProps: 'opacity,visibility,transform',
         })
         gsap.from('.summary-card', {
           autoAlpha: 0,
@@ -501,13 +772,15 @@ function animateIntro() {
           duration: 0.42,
           ease: 'power2.out',
           stagger: 0.045,
+          clearProps: 'opacity,visibility,transform',
         })
-        gsap.from(radarPolygonRef.value, {
-          scale: 0.78,
+        gsap.from('.profile-chart', {
           autoAlpha: 0,
-          transformOrigin: '50% 50%',
-          duration: 0.7,
-          ease: 'back.out(1.4)',
+          scale: 0.98,
+          duration: 0.5,
+          ease: 'power2.out',
+          stagger: 0.06,
+          clearProps: 'opacity,visibility,transform',
         })
       }, pageRef.value)
     },
@@ -523,17 +796,8 @@ function animateRefresh() {
   )
   gsap.fromTo(
     pageRef.value.querySelectorAll('.record-row:first-child'),
-    { x: 18, autoAlpha: 0.35 },
-    { x: 0, autoAlpha: 1, duration: 0.38, ease: 'power2.out', overwrite: 'auto' },
-  )
-}
-
-function animateDimensionFocus() {
-  if (!pageRef.value || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-  gsap.fromTo(
-    pageRef.value.querySelector('.dimension-focus'),
-    { y: 8, autoAlpha: 0.68 },
-    { y: 0, autoAlpha: 1, duration: 0.28, ease: 'power2.out', overwrite: 'auto' },
+    { x: 18 },
+    { x: 0, duration: 0.38, ease: 'power2.out', overwrite: 'auto', clearProps: 'transform' },
   )
 }
 
@@ -551,6 +815,26 @@ watch(
   },
 )
 
+watch(
+  report,
+  async () => {
+    await nextTick()
+    initCharts()
+    updateCharts()
+  },
+  { deep: true },
+)
+
+watch(
+  [diagnosticTab, scoringSourceFilter],
+  async () => {
+    await nextTick()
+    initCharts()
+    resizeCharts()
+    updateCharts()
+  },
+)
+
 onMounted(async () => {
   restoreDeletedRecordKeys()
   const cached = loadCachedReport()
@@ -564,18 +848,22 @@ onMounted(async () => {
   })
   await loadReport({ animate: false })
   await nextTick()
+  initCharts()
+  window.addEventListener('resize', resizeCharts)
   animateIntro()
 })
 
 onBeforeUnmount(() => {
   if (refreshTimer) window.clearTimeout(refreshTimer)
+  window.removeEventListener('resize', resizeCharts)
+  disposeCharts()
   gsapContext?.revert()
   mediaContext?.revert()
 })
 </script>
 
 <template>
-  <div ref="pageRef" class="profile-report-page" v-loading="loading">
+  <div ref="pageRef" class="profile-report-page">
     <div class="profile-dashboard-inner">
     <section class="profile-hero profile-section profile-animate">
       <div>
@@ -583,7 +871,7 @@ onBeforeUnmount(() => {
         <h1>学生个性画像</h1>
         <p>{{ profileNarrative }}</p>
       </div>
-      <el-button :icon="Refresh" :loading="refreshing" @click="loadReport({ silent: true })">
+      <el-button :icon="Refresh" :loading="refreshing || loading" @click="loadReport({ silent: true })">
         刷新画像
       </el-button>
     </section>
@@ -601,7 +889,7 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
-    <section class="profile-main-grid profile-section profile-animate">
+    <section class="profile-bento-grid profile-section profile-animate">
       <article class="report-card radar-card live-pulse">
         <div class="card-head">
           <div>
@@ -612,61 +900,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="radar-layout">
-          <svg class="radar-svg" viewBox="0 0 360 360" role="img" aria-label="学习特征雷达图">
-            <defs>
-              <radialGradient id="profileRadarFill" cx="50%" cy="50%" r="55%">
-                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.34" />
-                <stop offset="100%" stop-color="#2563eb" stop-opacity="0.08" />
-              </radialGradient>
-            </defs>
-            <polygon
-              v-for="(points, index) in radarGrid"
-              :key="index"
-              class="radar-grid-line"
-              :points="points"
-            />
-            <line
-              v-for="(axis, index) in radarAxis"
-              :key="index"
-              class="radar-axis"
-              x1="180"
-              y1="180"
-              :x2="axis.x"
-              :y2="axis.y"
-            />
-            <polygon ref="radarPolygonRef" class="radar-area" :points="radarPolygon" />
-            <polyline class="radar-stroke" :points="radarPolygon" />
-            <g
-              v-for="point in radarDataPoints"
-              :key="point.name"
-              class="radar-node"
-              :class="{ active: selectedDimension === point.name }"
-              @click="selectDimension(point.name)"
-            >
-              <circle :cx="point.x" :cy="point.y" r="10" :fill="point.color" opacity="0.14" />
-              <circle :cx="point.x" :cy="point.y" r="4.8" :fill="point.color" />
-            </g>
-            <g
-              v-for="label in radarLabels"
-              :key="label.name"
-              class="radar-label"
-              :class="{ active: selectedDimension === label.name }"
-              @click="selectDimension(label.name)"
-            >
-              <text :x="label.x" :y="label.y" :text-anchor="label.anchor">{{ label.name }}</text>
-              <text :x="label.x" :y="label.y + 18" :text-anchor="label.anchor" class="radar-label-score">{{ label.score }}</text>
-            </g>
-          </svg>
-
-          <div class="dimension-focus">
-            <span class="dimension-dot" :style="{ background: activeDimension?.color }" />
-            <h3>{{ activeDimension?.name }}</h3>
-            <strong>{{ activeDimension?.score }}</strong>
-            <p>{{ activeDimension?.desc }}</p>
-            <div class="dimension-bar">
-              <span :style="{ width: `${activeDimension?.score || 0}%`, background: activeDimension?.color }" />
-            </div>
-          </div>
+          <div ref="radarChartRef" class="profile-chart radar-chart" style="width: 100%; height: 360px;"></div>
         </div>
 
         <div class="radar-summary-grid">
@@ -708,10 +942,8 @@ onBeforeUnmount(() => {
         </div>
         </div>
       </article>
-    </section>
 
-    <section class="profile-analysis-grid profile-section profile-animate">
-      <article class="report-card live-pulse">
+      <article class="report-card trend-card live-pulse">
         <div class="card-head">
           <div>
             <p class="eyebrow">Trend</p>
@@ -720,16 +952,7 @@ onBeforeUnmount(() => {
           <el-icon><TrendCharts /></el-icon>
         </div>
         <div class="trend-panel">
-          <svg class="trend-chart" viewBox="0 0 520 210" role="img" aria-label="得分趋势折线图">
-            <line v-for="y in [44, 78, 112, 146, 180]" :key="y" x1="24" :y1="y" x2="496" :y2="y" class="chart-grid" />
-            <path v-if="trendAreaPath" :d="trendAreaPath" class="trend-area" />
-            <path v-if="trendPath" :d="trendPath" class="trend-line" />
-            <g v-for="point in trendPoints" :key="`${point.date}-${point.attemptId || point.score}`">
-              <circle class="trend-point" :cx="point.x" :cy="point.y" r="5" />
-              <text :x="point.x" :y="point.y - 12" text-anchor="middle" class="trend-score">{{ point.score }}</text>
-              <text :x="point.x" y="202" text-anchor="middle" class="trend-date">{{ point.date }}</text>
-            </g>
-          </svg>
+          <div ref="trendChartRef" class="profile-chart trend-chart" style="width: 100%; height: 260px;"></div>
           <aside class="trend-diagnosis-card">
             <span :class="['trend-status', trendSummary.trend === '下降' ? 'down' : trendSummary.trend === '上升' ? 'up' : 'flat']">
               当前趋势：{{ trendSummary.trend }}
@@ -781,33 +1004,7 @@ onBeforeUnmount(() => {
               <strong>{{ item.score }}</strong>
             </div>
           </div>
-          <svg class="dimension-mini-radar" viewBox="0 0 360 360" role="img" aria-label="画像维度小雷达图">
-            <polygon
-              v-for="(points, index) in radarGrid"
-              :key="index"
-              class="radar-grid-line"
-              :points="points"
-            />
-            <line
-              v-for="(axis, index) in radarAxis"
-              :key="index"
-              class="radar-axis"
-              x1="180"
-              y1="180"
-              :x2="axis.x"
-              :y2="axis.y"
-            />
-            <polygon class="radar-area" :points="radarPolygon" />
-            <polyline class="radar-stroke" :points="radarPolygon" />
-            <circle
-              v-for="point in radarDataPoints"
-              :key="point.name"
-              :cx="point.x"
-              :cy="point.y"
-              r="4.5"
-              :fill="point.color"
-            />
-          </svg>
+          <div ref="dimensionRadarChartRef" class="profile-chart dimension-mini-radar" style="width: 100%; height: 280px;"></div>
         </div>
 
         <div v-else class="scoring-diagnosis">
@@ -829,42 +1026,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="scoringItems.length" class="scoring-grid">
-            <div class="scoring-bars" aria-label="评分项得分率柱状图">
-              <div v-for="item in scoringItems" :key="item.name" class="scoring-bar-row">
-                <span>{{ item.name }}</span>
-                <div class="scoring-bar-track">
-                  <i :style="{ height: `${item.scoreRate}%` }" />
-                </div>
-                <strong>{{ item.scoreRate }}%</strong>
-              </div>
-            </div>
-
-            <svg class="scoring-radar" viewBox="0 0 300 300" role="img" aria-label="评分项诊断雷达图">
-              <polygon
-                v-for="(points, index) in scoringRadarGrid"
-                :key="index"
-                class="radar-grid-line"
-                :points="points"
-              />
-              <line
-                v-for="(axis, index) in scoringRadarAxis"
-                :key="index"
-                class="radar-axis"
-                x1="150"
-                y1="150"
-                :x2="axis.x"
-                :y2="axis.y"
-              />
-              <polygon class="scoring-radar-area" :points="scoringRadarPolygon" />
-              <polyline class="scoring-radar-line" :points="scoringRadarPolygon" />
-              <g v-for="point in scoringRadarPoints" :key="point.name">
-                <circle class="scoring-radar-node" :cx="point.x" :cy="point.y" r="4.5" />
-              </g>
-              <g v-for="label in scoringRadarLabels" :key="label.name" class="scoring-radar-label">
-                <text :x="label.x" :y="label.y" :text-anchor="label.anchor">{{ label.name }}</text>
-                <text :x="label.x" :y="label.y + 14" :text-anchor="label.anchor">{{ label.scoreRate }}%</text>
-              </g>
-            </svg>
+            <div ref="scoringBarChartRef" class="profile-chart scoring-bar-chart" style="width: 100%; height: 420px;"></div>
+            <div ref="scoringRadarChartRef" class="profile-chart scoring-radar" style="width: 100%; height: 280px;"></div>
           </div>
           <el-empty v-else description="暂无评分项明细" />
         </div>
@@ -946,67 +1109,61 @@ onBeforeUnmount(() => {
         <aside class="records-side">
           <article class="records-side-card">
             <div class="records-side-head">
-              <h3>画像更新依据</h3>
-              <span>{{ currentRecordTabLabel }}</span>
+              <div>
+                <h3>画像更新依据</h3>
+                <span>{{ currentRecordTabLabel }}</span>
+              </div>
+              <div class="profile-change-tags">
+                <el-tag size="small" type="warning" effect="light">{{ weakestDimensions[0]?.name || '知识基础' }}待补强</el-tag>
+                <el-tag size="small" type="success" effect="light">{{ strongestDimension?.name || '协作表达' }}稳定</el-tag>
+                <el-tag size="small" effect="light">理解迁移加强</el-tag>
+              </div>
             </div>
             <div class="record-stat-grid">
               <div class="record-stat-chip">
+                <el-icon><Document /></el-icon>
                 <strong>{{ recordStats.all }}</strong>
                 <span>总记录</span>
               </div>
               <div class="record-stat-chip">
+                <el-icon><DataAnalysis /></el-icon>
                 <strong>{{ recordStats.exam }}</strong>
                 <span>试卷</span>
               </div>
               <div class="record-stat-chip">
+                <el-icon><TrendCharts /></el-icon>
                 <strong>{{ recordStats.practice }}</strong>
                 <span>练习</span>
               </div>
               <div class="record-stat-chip">
+                <el-icon><ChatDotRound /></el-icon>
                 <strong>{{ recordStats.assistant }}</strong>
                 <span>小C</span>
               </div>
-              <div class="record-stat-chip">
-                <strong>{{ recordStats.all }}</strong>
-                <span>已纳入画像</span>
-              </div>
             </div>
           </article>
 
           <article class="records-side-card">
-            <h3>最近作答</h3>
-            <template v-if="latestAttemptRecord">
-              <p class="records-side-title">{{ latestAttemptRecord.title }}</p>
-              <p class="records-side-text">{{ latestAttemptRecord.summary }}</p>
-              <div class="records-side-meta">
-                <span>{{ latestAttemptRecord.time }}</span>
-                <strong v-if="latestAttemptRecord.scoreLabel">{{ latestAttemptRecord.scoreLabel }}</strong>
-              </div>
-              <p class="records-side-note">已纳入画像评分</p>
-            </template>
-            <el-empty v-else :image-size="56" description="暂无作答记录" />
-          </article>
-
-          <article class="records-side-card">
-            <h3>最近小C对话</h3>
-            <template v-if="latestAssistantRecord">
-              <p class="records-side-title">{{ latestAssistantRecord.title }}</p>
-              <p class="records-side-text">{{ latestAssistantRecord.summary }}</p>
-              <div class="records-side-meta">
-                <span>{{ latestAssistantRecord.time }}</span>
-              </div>
-              <p class="records-side-note">重点关注 {{ weakestDimensions[0]?.name || '知识基础' }} 与理解迁移</p>
-            </template>
-            <el-empty v-else :image-size="56" description="暂无小C对话" />
-          </article>
-
-          <article class="records-side-card">
-            <h3>当前画像变化</h3>
-            <div class="profile-change-list">
-              <span>{{ weakestDimensions[0]?.name || '知识基础' }}需要补强</span>
-              <span>{{ strongestDimension?.name || '协作表达' }}表现稳定</span>
-              <span>理解迁移建议加强</span>
+            <div class="records-side-head compact">
+              <h3>最近动态</h3>
+              <span>按时间更新</span>
             </div>
+            <el-timeline v-if="recentTimelineRecords.length" class="records-timeline">
+              <el-timeline-item
+                v-for="record in recentTimelineRecords"
+                :key="`${record.type}-${record.refId || record.title}-${record.time}`"
+                :timestamp="record.time"
+                placement="top"
+                :type="record.type === 'assistant' ? 'primary' : 'success'"
+              >
+                <button type="button" class="timeline-record" @click="openRecord(record)">
+                  <strong>{{ record.title }}</strong>
+                  <span>{{ record.summary }}</span>
+                  <em v-if="record.scoreLabel">{{ record.scoreLabel }}</em>
+                </button>
+              </el-timeline-item>
+            </el-timeline>
+            <el-empty v-else :image-size="56" description="暂无最近动态" />
           </article>
 
           <article class="records-side-card">
@@ -1092,6 +1249,3 @@ onBeforeUnmount(() => {
 </template>
 
 <style src="@/styles/knowledge-profile-view.css" scoped></style>
-
-
-
