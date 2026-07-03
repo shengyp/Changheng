@@ -28,6 +28,7 @@ const detailOpen = ref(false)
 const recordFilter = ref('all')
 const diagnosticTab = ref('dimension')
 const scoringSourceFilter = ref('all')
+const evidenceExpanded = ref(false)
 const report = ref(buildFallbackReport())
 
 const PROFILE_REPORT_CACHE_KEY = 'knowledge-profile-report-cache'
@@ -83,11 +84,19 @@ const dimensionMeta = {
 
 const summaryCards = computed(() => {
   const summary = report.value.summary || {}
+  const latest = latestAttemptRecord.value
   return [
-    { label: '画像总分', value: summary.profileScore ?? 0, suffix: '', icon: View },
-    { label: '试卷记录', value: summary.examCount ?? 0, suffix: '次', icon: Document },
-    { label: '练习记录', value: summary.practiceCount ?? 0, suffix: '次', icon: DataAnalysis },
-    { label: '小C对话', value: summary.assistantChatCount ?? 0, suffix: '条', icon: ChatDotRound },
+    { label: '综合画像分', value: summary.profileScore ?? 0, suffix: '', hint: '综合诊断', icon: View },
+    { label: '薄弱维度', value: weakestDimensions.value[0]?.name || '知识基础', suffix: '', hint: `${weakestDimensions.value[0]?.score ?? 0} 分`, icon: DataAnalysis },
+    { label: '优势维度', value: strongestDimension.value?.name || '协作表达', suffix: '', hint: `${strongestDimension.value?.score ?? 0} 分`, icon: TrendCharts },
+    {
+      label: '最近测评',
+      value: latest?.score !== null && latest?.score !== undefined ? latest.score : '待补充',
+      suffix: latest?.score !== null && latest?.score !== undefined ? '分' : '',
+      hint: latest?.title || '完成作答后更新',
+      icon: Document,
+    },
+    { label: '推荐任务', value: Math.max(weakestDimensions.value.length, 1), suffix: '项', hint: '按薄弱维度生成', icon: ChatDotRound },
   ]
 })
 
@@ -108,16 +117,64 @@ const activeDimension = computed(() => {
 
 const strongestDimension = computed(() => [...radarDimensions.value].sort((a, b) => b.score - a.score)[0])
 const weakestDimensions = computed(() => [...radarDimensions.value].sort((a, b) => a.score - b.score).slice(0, 3))
+const radarSummaryCards = computed(() => [
+  {
+    label: '薄弱点',
+    value: weakestDimensions.value[0]?.name || '知识基础',
+    text: weakestDimensions.value[0]?.action || '先补齐低掌握知识点。',
+    tone: 'risk',
+  },
+  {
+    label: '优势点',
+    value: strongestDimension.value?.name || '协作表达',
+    text: '保留当前优势维度的训练频率，用它带动复盘和表达。',
+    tone: 'strength',
+  },
+  {
+    label: '下一步',
+    value: '专项补强',
+    text: weakestDimensions.value.slice(0, 2).map((item) => item.name).join('、') || '完成一次针对性练习',
+    tone: 'advice',
+  },
+])
 const insights = computed(() => {
   const list = Array.isArray(report.value.insights) ? report.value.insights : []
-  if (list.length) return list
-  return [
+  const generated = [
     {
       type: 'risk',
       title: `优先补强 ${weakestDimensions.value[0]?.name || '知识基础'}`,
       description: weakestDimensions.value[0]?.action || '完成一次练习后系统会给出更准确建议。',
+      priority: '高优先级',
+    },
+    {
+      type: 'strength',
+      title: `${strongestDimension.value?.name || '协作表达'}较稳定`,
+      description: `当前得分 ${strongestDimension.value?.score ?? 0}，可作为后续迁移、讲解和复盘表达的支点。`,
+      priority: '保持',
+    },
+    {
+      type: 'attempt',
+      title: '最近作答已纳入画像',
+      description: latestAttemptRecord.value
+        ? `${latestAttemptRecord.value.title} 已计入得分趋势和能力分布。`
+        : '完成试卷或练习后，系统会自动更新画像依据。',
+      priority: '已更新',
+    },
+    {
+      type: 'assistant',
+      title: '小C对话持续更新画像',
+      description: `${recordStats.value.assistant} 条小C互动会影响学习路径、资源筛选和复盘建议。`,
+      priority: '持续采集',
+    },
+    {
+      type: 'advice',
+      title: '系统建议',
+      description: `建议优先复习 ${weakestDimensions.value.map((item) => item.name).join('、') || '知识基础'}，并完成对应练习。`,
+      priority: '下一步',
     },
   ]
+  if (!list.length) return generated
+  return [...list.slice(0, 3).map((item) => ({ ...item, description: sanitizeStudentText(item.description), priority: item.priority || '诊断' })), ...generated.slice(1, 4)]
 })
 
 const trendPoints = computed(() => normalizeTrend(report.value.scoreTrend || []))
@@ -128,6 +185,30 @@ const trendAreaPath = computed(() => {
   const first = trendPoints.value[0]
   if (!first || !last) return ''
   return `${trendPath.value} L ${last.x} 180 L ${first.x} 180 Z`
+})
+const trendSummary = computed(() => {
+  const raw = Array.isArray(report.value.scoreTrend) ? report.value.scoreTrend.slice(-5) : []
+  const scores = raw.map((item) => clamp(Number(item.score) || 0, 0, 100))
+  const first = scores[0] ?? 0
+  const latest = scores[scores.length - 1] ?? 0
+  const highest = scores.length ? Math.max(...scores) : 0
+  const delta = latest - first
+  const weak = weakestDimensions.value[0]?.name || '知识基础'
+  const trend = delta > 3 ? '上升' : delta < -3 ? '下降' : '平稳'
+  return {
+    trend,
+    highest,
+    latest,
+    delta,
+    reason: trend === '下降'
+      ? `最近一次测评表现回落，主要拉低 ${weak} 与理解迁移相关判断。`
+      : trend === '上升'
+        ? `最近作答表现改善，${strongestDimension.value?.name || '优势维度'}正在稳定支撑画像。`
+        : `最近画像分波动不大，建议继续补充 ${weak} 的练习证据。`,
+    advice: trend === '下降'
+      ? '优先复盘错题并完成知识基础补强练习。'
+      : `继续围绕 ${weak} 完成专项练习和小C复盘。`,
+  }
 })
 
 const scoringVariants = computed(() => {
@@ -162,6 +243,18 @@ const scoringRadarLabels = computed(() => scoringItems.value.map((item, index) =
   ...scoreRadarPoint(122, index, scoringItems.value.length),
   anchor: index === 0 ? 'middle' : index > 0 && index < scoringItems.value.length / 2 ? 'start' : 'end',
 })))
+const diagnosisSummary = computed(() => {
+  const items = scoringItems.value.length
+    ? scoringItems.value.map((item) => ({ name: item.name, score: clamp(Number(item.scoreRate) || 0, 0, 100) }))
+    : radarDimensions.value.map((item) => ({ name: item.name, score: item.score }))
+  const best = [...items].sort((a, b) => b.score - a.score)[0]
+  const weak = [...items].sort((a, b) => a.score - b.score)[0]
+  return {
+    best: best?.name || strongestDimension.value?.name || '计算思维',
+    weak: weak?.name || weakestDimensions.value[0]?.name || '边缘情况考虑',
+    advice: `优先完成 ${weakestDimensions.value.slice(0, 3).map((item) => item.name).join('、') || '数组与字符串、分支循环、变量与数据类型'} 相关练习。`,
+  }
+})
 
 const filteredRecords = computed(() => {
   const records = Array.isArray(report.value.records) ? report.value.records : []
@@ -169,6 +262,8 @@ const filteredRecords = computed(() => {
   if (recordFilter.value === 'all') return visible
   return visible.filter((item) => item.type === recordFilter.value)
 })
+const evidenceRecords = computed(() => filteredRecords.value.map(formatStudentRecordForDisplay))
+const visibleEvidenceRecords = computed(() => evidenceExpanded.value ? evidenceRecords.value : evidenceRecords.value.slice(0, 5))
 
 const recordTabs = [
   { label: '全部', value: 'all' },
@@ -192,13 +287,47 @@ const recordStats = computed(() => {
 })
 
 const latestAttemptRecord = computed(() => {
-  return filteredRecords.value.find((item) => item.type === 'exam' || item.type === 'practice')
+  const source = filteredRecords.value.find((item) => item.type === 'exam' || item.type === 'practice')
     || (Array.isArray(report.value.records) ? report.value.records.find((item) => item.type === 'exam' || item.type === 'practice') : null)
+  return source ? formatStudentRecordForDisplay(source) : null
 })
 
 const latestAssistantRecord = computed(() => {
-  return filteredRecords.value.find((item) => item.type === 'assistant')
+  const source = filteredRecords.value.find((item) => item.type === 'assistant')
     || (Array.isArray(report.value.records) ? report.value.records.find((item) => item.type === 'assistant') : null)
+  return source ? formatStudentRecordForDisplay(source) : null
+})
+const evidenceAdvice = computed(() => {
+  const weak = weakestDimensions.value[0]?.name || '知识基础'
+  if (latestAttemptRecord.value && latestAssistantRecord.value) {
+    return `结合最近作答和小C对话，建议优先完成 ${weak} 专项练习。`
+  }
+  return `继续补充作答记录和小C复盘，让系统更准确判断 ${weak} 的补强路径。`
+})
+const profileSyncStatus = computed(() => {
+  const updatedAt = report.value.summary?.updatedAt || latestAssistantRecord.value?.time || latestAttemptRecord.value?.time || '等待数据'
+  if (refreshing.value) {
+    return {
+      label: '画像更新中',
+      text: '正在根据最新记录重新计算画像',
+      updatedAt,
+      tone: 'syncing',
+    }
+  }
+  if (recordStats.value.all > 0) {
+    return {
+      label: '画像已同步',
+      text: '最近记录已纳入画像分析',
+      updatedAt,
+      tone: 'synced',
+    }
+  }
+  return {
+    label: '等待更新',
+    text: '完成作答或小C对话后更新画像',
+    updatedAt,
+    tone: 'pending',
+  }
 })
 
 const profileNarrative = computed(() => {
@@ -208,6 +337,10 @@ const profileNarrative = computed(() => {
 })
 
 const activeAssistantQa = computed(() => parseAssistantDetail(activeRecord.value))
+
+watch(recordFilter, () => {
+  evidenceExpanded.value = false
+})
 
 async function loadReport(options = {}) {
   if (options.silent) {
@@ -270,12 +403,12 @@ function restoreDeletedRecordKeys() {
 }
 
 function deleteRecord(record) {
-  const key = recordKey(record)
+  const key = record?.originalKey || recordKey(record)
   if (!deletedRecordKeys.value.includes(key)) {
     deletedRecordKeys.value = [key, ...deletedRecordKeys.value]
     persistDeletedRecordKeys()
   }
-  if (activeRecord.value && recordKey(activeRecord.value) === key) {
+  if (activeRecord.value && (activeRecord.value.originalKey || recordKey(activeRecord.value)) === key) {
     detailOpen.value = false
     activeRecord.value = null
   }
@@ -311,9 +444,179 @@ function openRecord(record) {
   nextTick(() => animateDrawer())
 }
 
+function formatStudentRecordForDisplay(record = {}) {
+  const type = record.type || 'record'
+  const scoreText = record.score !== null && record.score !== undefined ? `本次得分 ${record.score} 分，已纳入知识画像分析。` : ''
+  const base = {
+    originalKey: recordKey(record),
+    profileStatus: '已纳入画像',
+    impactDimensions: buildRecordImpactDimensions(record),
+    impactChanges: buildRecordImpactChanges(record),
+    relatedKnowledge: inferRelatedKnowledge(record),
+  }
+  if (type === 'assistant') {
+    const title = friendlyAssistantTitle(record)
+    const summary = friendlyAssistantSummary(record)
+    const qa = buildAssistantDisplayDetail(record, title, summary)
+    return {
+      ...record,
+      ...base,
+      title,
+      summary,
+      detail: qa.answer,
+      question: qa.question,
+      answerSummary: qa.answer,
+      advice: qa.advice,
+      primaryAction: '查看对话',
+      secondaryAction: '查看建议',
+    }
+  }
+  if (type === 'exam') {
+    return {
+      ...record,
+      ...base,
+      title: sanitizeStudentText(record.title) || '试卷记录',
+      summary: scoreText || sanitizeStudentText(record.summary) || '你完成了一次阶段测评，系统已将结果纳入学习画像。',
+      detail: sanitizeStudentText(record.detail || record.summary) || scoreText,
+      primaryAction: '查看详情',
+      secondaryAction: '查看画像影响',
+    }
+  }
+  if (type === 'practice') {
+    return {
+      ...record,
+      ...base,
+      title: sanitizeStudentText(record.title) || '练习题记录',
+      summary: scoreText || sanitizeStudentText(record.summary) || '你完成了一次专项练习，系统根据结果更新了知识点掌握情况。',
+      detail: sanitizeStudentText(record.detail || record.summary) || scoreText,
+      primaryAction: '查看详情',
+      secondaryAction: '查看相关知识点',
+    }
+  }
+  return {
+    ...record,
+    ...base,
+    title: sanitizeStudentText(record.title) || '学习记录',
+    summary: sanitizeStudentText(record.summary) || '该学习记录已纳入画像分析。',
+    detail: sanitizeStudentText(record.detail || record.summary),
+    primaryAction: '查看详情',
+    secondaryAction: '查看画像影响',
+  }
+}
+
+function sanitizeRecordForStudent(record = {}) {
+  return formatStudentRecordForDisplay(record)
+}
+
+function buildRecordImpactDimensions(record = {}) {
+  if (record.type === 'assistant') return ['学习自律', '理解迁移', '资源筛选']
+  if (record.type === 'exam') return ['知识基础', '理解迁移', '实践能力']
+  if (record.type === 'practice') return ['知识基础', '实践能力']
+  return ['知识基础']
+}
+
+function buildRecordImpactChanges(record = {}) {
+  const dimensions = buildRecordImpactDimensions(record)
+  const score = Number(record.score)
+  return dimensions.map((name, index) => {
+    let delta = index === 0 ? 1 : 0
+    if (Number.isFinite(score)) {
+      delta = score >= 80 ? 2 - Math.min(index, 1) : score >= 60 ? 1 : index === 0 ? -1 : 0
+    } else if (record.type === 'assistant') {
+      delta = index < 2 ? 1 : 0
+    }
+    return { name, delta }
+  })
+}
+
+function inferRelatedKnowledge(record = {}) {
+  const text = `${record.title || ''} ${record.summary || ''} ${record.detail || ''}`
+  const points = []
+  if (/变量|数据类型/.test(text)) points.push('变量与数据类型')
+  if (/分支|循环|if|for|while/i.test(text)) points.push('分支循环')
+  if (/数组|字符串|字符/.test(text)) points.push('数组与字符串')
+  if (/指针/.test(text)) points.push('指针基础')
+  if (/函数/.test(text)) points.push('函数设计')
+  return points.length ? points.slice(0, 4) : weakestDimensions.value.slice(0, 3).map((item) => item.name)
+}
+
+function buildAssistantDisplayDetail(record = {}, title = '', summary = '') {
+  const raw = normalizeRecordText(record.detail || record.summary || '')
+  const question = sanitizeStudentText(
+    extractStudentQuestion(raw)
+    || record.question
+    || (isInternalPromptText(raw) ? '帮我规划一个 C 语言学习计划。' : record.title)
+    || title
+  )
+  const answer = summary || '小C根据你的学习记录生成了学习路径建议。'
+  return {
+    question: question || '学习路径咨询',
+    answer,
+    advice: inferRelatedKnowledge(record).length
+      ? `建议先复习 ${inferRelatedKnowledge(record).join('、')}，再进行综合练习。`
+      : '建议先复盘近期作答，再完成对应专项练习。',
+  }
+}
+
+function friendlyAssistantTitle(record = {}) {
+  const text = `${record.title || ''} ${record.summary || ''} ${record.detail || ''}`
+  if (/路径|path|推荐|recommend/i.test(text)) return '小C学习路径对话'
+  if (/错题|复盘|订正|错误/.test(text)) return '小C错题复盘建议'
+  if (/数组|字符串|字符/.test(text)) return '数组与字符串复盘建议'
+  if (/循环|分支|变量|数据类型/.test(text)) return '基础语法补强建议'
+  return sanitizeStudentText(record.title) || '小C学习对话'
+}
+
+function friendlyAssistantSummary(record = {}) {
+  const cleaned = sanitizeStudentText(record.summary || record.detail || record.title)
+  const text = `${record.title || ''} ${record.summary || ''} ${record.detail || ''}`
+  if (/路径|path|推荐|recommend/i.test(text)) {
+    return '系统根据你的作答记录生成了下一步学习路径建议。'
+  }
+  if (/数组|字符串|字符/.test(text)) {
+    return '围绕数组下标、字符串结束符和字符数组输入输出进行针对性复习。'
+  }
+  if (/错题|复盘|订正|错误/.test(text)) {
+    return '小C根据近期错题整理了复盘重点，帮助你定位薄弱知识点。'
+  }
+  if (/循环|分支|变量|数据类型/.test(text)) {
+    return '建议先补强变量、分支循环等基础语法，再进入综合练习。'
+  }
+  return cleaned || '小C对话已纳入画像，用于更新学习路径和复盘建议。'
+}
+
+function sanitizeStudentText(text) {
+  const normalized = normalizeRecordText(text)
+  if (!normalized) return ''
+  if (isInternalPromptText(normalized)) {
+    return '系统已根据你的学习证据生成画像建议，重点用于学习路径、错题复盘和知识点补强。'
+  }
+  return normalized
+    .replace(/```json[\s\S]*?```/gi, '系统已整理结构化建议。')
+    .replace(/```[\s\S]*?```/g, '系统已整理学习建议。')
+    .replace(/\{[\s\S]{80,}\}/g, '系统已整理学习建议。')
+    .replace(/请基于[\s\S]*?(输出|生成)/g, '系统根据你的学习证据')
+    .replace(/字段必须包含[\s\S]*$/g, '')
+    .replace(/不要输出\s*markdown/gi, '')
+    .replace(/严格\s*JSON/gi, '学习建议')
+    .replace(/system prompt|assistant prompt|prompt/gi, '学习建议')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function isInternalPromptText(text) {
+  return /严格\s*JSON|不要输出\s*markdown|字段必须包含|system prompt|developer prompt|assistant prompt|你是学习路径分析助手|请基于以下|输出\s*JSON|JSON\s*字段|模型调用参数|数据库字段|内部调试|异常信息/i.test(text)
+}
+
 function parseAssistantDetail(record) {
   if (!record || record.type !== 'assistant') {
     return { question: '', answer: '' }
+  }
+  if (record.summary && !isInternalPromptText(record.summary)) {
+    return {
+      question: record.title || '小C学习对话',
+      answer: sanitizeStudentText(record.summary),
+    }
   }
   const detail = normalizeRecordText(record.detail || '')
   const summary = normalizeRecordText(record.summary || '')
@@ -641,7 +944,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="pageRef" class="profile-report-page" v-loading="loading">
-    <section class="profile-hero profile-animate">
+    <div class="profile-dashboard-inner">
+    <section class="profile-hero profile-section profile-animate">
       <div>
         <p class="eyebrow">Student Profile Report</p>
         <h1>学生个性画像</h1>
@@ -652,7 +956,7 @@ onBeforeUnmount(() => {
       </el-button>
     </section>
 
-    <section class="summary-grid profile-animate live-pulse">
+    <section class="summary-grid profile-section profile-animate live-pulse">
       <article v-for="card in summaryCards" :key="card.label" class="summary-card">
         <div class="summary-icon">
           <el-icon><component :is="card.icon" /></el-icon>
@@ -660,15 +964,12 @@ onBeforeUnmount(() => {
         <div>
           <strong>{{ card.value }}{{ card.suffix }}</strong>
           <span>{{ card.label }}</span>
+          <em>{{ card.hint }}</em>
         </div>
-      </article>
-      <article class="summary-card update-card">
-        <span>最近更新</span>
-        <strong>{{ report.summary?.updatedAt || '等待数据' }}</strong>
       </article>
     </section>
 
-    <section class="core-grid profile-animate">
+    <section class="profile-main-grid profile-section profile-animate">
       <article class="report-card radar-card live-pulse">
         <div class="card-head">
           <div>
@@ -735,6 +1036,14 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+
+        <div class="radar-summary-grid">
+          <article v-for="item in radarSummaryCards" :key="item.label" :class="['radar-summary-card', item.tone]">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <p>{{ item.text }}</p>
+          </article>
+        </div>
       </article>
 
       <article class="report-card insight-card live-pulse">
@@ -748,10 +1057,13 @@ onBeforeUnmount(() => {
 
         <div class="insight-scroll">
         <div class="insight-list">
-          <article v-for="item in insights" :key="`${item.type}-${item.title}`" class="insight-item">
-            <span class="insight-type">{{ item.type }}</span>
+          <article v-for="item in insights" :key="`${item.type}-${item.title}`" :class="['insight-item', item.type]">
+            <div class="insight-item-head">
+              <span class="insight-type">{{ item.type }}</span>
+              <em>{{ item.priority || '诊断' }}</em>
+            </div>
             <h3>{{ item.title }}</h3>
-            <p>{{ item.description }}</p>
+            <p>{{ sanitizeStudentText(item.description) }}</p>
           </article>
         </div>
 
@@ -766,25 +1078,44 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
-    <section class="analytics-grid profile-animate">
+    <section class="profile-analysis-grid profile-section profile-animate">
       <article class="report-card live-pulse">
         <div class="card-head">
           <div>
             <p class="eyebrow">Trend</p>
-            <h2>得分趋势</h2>
+            <h2>学习趋势分析</h2>
           </div>
           <el-icon><TrendCharts /></el-icon>
         </div>
-        <svg class="trend-chart" viewBox="0 0 520 210" role="img" aria-label="得分趋势折线图">
-          <line v-for="y in [44, 78, 112, 146, 180]" :key="y" x1="24" :y1="y" x2="496" :y2="y" class="chart-grid" />
-          <path v-if="trendAreaPath" :d="trendAreaPath" class="trend-area" />
-          <path v-if="trendPath" :d="trendPath" class="trend-line" />
-          <g v-for="point in trendPoints" :key="`${point.date}-${point.attemptId || point.score}`">
-            <circle class="trend-point" :cx="point.x" :cy="point.y" r="5" />
-            <text :x="point.x" :y="point.y - 12" text-anchor="middle" class="trend-score">{{ point.score }}</text>
-            <text :x="point.x" y="202" text-anchor="middle" class="trend-date">{{ point.date }}</text>
-          </g>
-        </svg>
+        <div class="trend-panel">
+          <svg class="trend-chart" viewBox="0 0 520 210" role="img" aria-label="得分趋势折线图">
+            <line v-for="y in [44, 78, 112, 146, 180]" :key="y" x1="24" :y1="y" x2="496" :y2="y" class="chart-grid" />
+            <path v-if="trendAreaPath" :d="trendAreaPath" class="trend-area" />
+            <path v-if="trendPath" :d="trendPath" class="trend-line" />
+            <g v-for="point in trendPoints" :key="`${point.date}-${point.attemptId || point.score}`">
+              <circle class="trend-point" :cx="point.x" :cy="point.y" r="5" />
+              <text :x="point.x" :y="point.y - 12" text-anchor="middle" class="trend-score">{{ point.score }}</text>
+              <text :x="point.x" y="202" text-anchor="middle" class="trend-date">{{ point.date }}</text>
+            </g>
+          </svg>
+          <aside class="trend-diagnosis-card">
+            <span :class="['trend-status', trendSummary.trend === '下降' ? 'down' : trendSummary.trend === '上升' ? 'up' : 'flat']">
+              当前趋势：{{ trendSummary.trend }}
+            </span>
+            <dl>
+              <div>
+                <dt>最高分</dt>
+                <dd>{{ trendSummary.highest }}</dd>
+              </div>
+              <div>
+                <dt>最近分</dt>
+                <dd>{{ trendSummary.latest }}</dd>
+              </div>
+            </dl>
+            <p>{{ trendSummary.reason }}</p>
+            <strong>{{ trendSummary.advice }}</strong>
+          </aside>
+        </div>
       </article>
 
       <article class="report-card diagnosis-card live-pulse">
@@ -805,17 +1136,46 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div v-if="diagnosticTab === 'dimension'" class="distribution-list">
-          <div v-for="item in radarDimensions" :key="item.name" class="distribution-row">
-            <div>
-              <span>{{ item.name }}</span>
-              <em>{{ levelText(item.level, item.score) }}</em>
+        <div v-if="diagnosticTab === 'dimension'" class="dimension-diagnosis-grid">
+          <div class="distribution-list">
+            <div v-for="item in radarDimensions" :key="item.name" class="distribution-row">
+              <div>
+                <span>{{ item.name }}</span>
+                <em>{{ levelText(item.level, item.score) }}</em>
+              </div>
+              <div class="distribution-track">
+                <span :style="{ width: `${item.score}%`, background: item.color }" />
+              </div>
+              <strong>{{ item.score }}</strong>
             </div>
-            <div class="distribution-track">
-              <span :style="{ width: `${item.score}%`, background: item.color }" />
-            </div>
-            <strong>{{ item.score }}</strong>
           </div>
+          <svg class="dimension-mini-radar" viewBox="0 0 360 360" role="img" aria-label="画像维度小雷达图">
+            <polygon
+              v-for="(points, index) in radarGrid"
+              :key="index"
+              class="radar-grid-line"
+              :points="points"
+            />
+            <line
+              v-for="(axis, index) in radarAxis"
+              :key="index"
+              class="radar-axis"
+              x1="180"
+              y1="180"
+              :x2="axis.x"
+              :y2="axis.y"
+            />
+            <polygon class="radar-area" :points="radarPolygon" />
+            <polyline class="radar-stroke" :points="radarPolygon" />
+            <circle
+              v-for="point in radarDataPoints"
+              :key="point.name"
+              :cx="point.x"
+              :cy="point.y"
+              r="4.5"
+              :fill="point.color"
+            />
+          </svg>
         </div>
 
         <div v-else class="scoring-diagnosis">
@@ -876,16 +1236,27 @@ onBeforeUnmount(() => {
           </div>
           <el-empty v-else description="暂无评分项明细" />
         </div>
+        <div class="diagnosis-summary">
+          <p><span>优势维度</span>{{ diagnosisSummary.best }}体现较好</p>
+          <p><span>薄弱维度</span>{{ diagnosisSummary.weak }}需要补强</p>
+          <p><span>建议</span>{{ diagnosisSummary.advice }}</p>
+        </div>
       </article>
     </section>
 
-    <section class="report-card records-card profile-animate live-pulse">
-      <div class="records-layout">
+    <section class="report-card records-card profile-section profile-animate live-pulse">
+      <div class="profile-evidence-grid">
         <div class="records-main">
       <div class="card-head">
         <div>
-          <p class="eyebrow">Records</p>
-          <h2>作答记录与小C对话</h2>
+          <p class="eyebrow">Evidence</p>
+          <h2>学习轨迹与画像依据</h2>
+          <p class="section-subtitle">系统根据你的作答记录、练习记录和小C对话，实时更新学习画像和下一步学习建议。</p>
+        </div>
+        <div :class="['profile-sync-status', profileSyncStatus.tone]">
+          <strong>{{ profileSyncStatus.label }}</strong>
+          <span>最近更新：{{ profileSyncStatus.updatedAt }}</span>
+          <em>{{ profileSyncStatus.text }}</em>
         </div>
         <div class="record-tabs" role="tablist" aria-label="记录筛选">
           <button
@@ -898,45 +1269,58 @@ onBeforeUnmount(() => {
             {{ tab.label }}
           </button>
         </div>
-        <div class="record-actions">
-          <el-button text :icon="Delete" @click="batchDeleteRecords">批量删除当前列表</el-button>
-        </div>
       </div>
 
-      <div class="record-list">
+      <div class="record-list" :class="{ expanded: evidenceExpanded }">
         <div
-          v-for="record in filteredRecords"
+          v-for="record in visibleEvidenceRecords"
           :key="`${record.type}-${record.refId || record.title}-${record.time}`"
-          class="record-row"
+          class="evidence-row"
         >
           <button type="button" class="record-row-main" @click="openRecord(record)">
             <span class="record-type" :class="record.type">{{ recordTypeText(record.type) }}</span>
             <span class="record-main">
-              <strong>{{ record.title }}</strong>
+              <span class="record-title-line">
+                <strong>{{ record.title }}</strong>
+                <i>{{ record.profileStatus }}</i>
+              </span>
               <em>{{ record.summary }}</em>
+              <span class="record-impact-tags">
+                <b v-for="impact in record.impactChanges" :key="`${record.title}-${impact.name}`">
+                  {{ impact.name }} {{ impact.delta > 0 ? `+${impact.delta}` : impact.delta }}
+                </b>
+              </span>
             </span>
             <span class="record-meta">
               <strong v-if="record.score !== null && record.score !== undefined">{{ record.score }}</strong>
               <em>{{ record.time }}</em>
             </span>
           </button>
-          <el-button text type="primary" @click.stop="openRecord(record)">查看详情</el-button>
-          <el-button text type="danger" :icon="Delete" @click="deleteRecord(record)">删除</el-button>
+          <div class="record-row-actions">
+            <el-button text type="primary" @click.stop="openRecord(record)">{{ record.primaryAction }}</el-button>
+            <el-button text @click.stop="openRecord(record)">{{ record.secondaryAction }}</el-button>
+            <el-button text class="record-delete-action" :icon="Delete" @click.stop="deleteRecord(record)">删除</el-button>
+          </div>
         </div>
-        <el-empty v-if="!filteredRecords.length" description="暂无记录" />
+        <el-empty v-if="!evidenceRecords.length" description="暂无画像证据" />
+      </div>
+      <div v-if="evidenceRecords.length > 5" class="evidence-more">
+        <el-button text type="primary" @click="evidenceExpanded = !evidenceExpanded">
+          {{ evidenceExpanded ? '收起记录' : `查看更多 ${evidenceRecords.length - 5} 条` }}
+        </el-button>
       </div>
         </div>
 
         <aside class="records-side">
           <article class="records-side-card">
             <div class="records-side-head">
-              <h3>记录联动摘要</h3>
+              <h3>画像更新依据</h3>
               <span>{{ currentRecordTabLabel }}</span>
             </div>
             <div class="record-stat-grid">
               <div class="record-stat-chip">
                 <strong>{{ recordStats.all }}</strong>
-                <span>全部</span>
+                <span>总记录</span>
               </div>
               <div class="record-stat-chip">
                 <strong>{{ recordStats.exam }}</strong>
@@ -950,6 +1334,10 @@ onBeforeUnmount(() => {
                 <strong>{{ recordStats.assistant }}</strong>
                 <span>小C</span>
               </div>
+              <div class="record-stat-chip">
+                <strong>{{ recordStats.all }}</strong>
+                <span>已纳入画像</span>
+              </div>
             </div>
           </article>
 
@@ -962,7 +1350,7 @@ onBeforeUnmount(() => {
                 <span>{{ latestAttemptRecord.time }}</span>
                 <strong v-if="latestAttemptRecord.score !== null && latestAttemptRecord.score !== undefined">{{ latestAttemptRecord.score }}</strong>
               </div>
-              <el-button text type="primary" @click="openRecord(latestAttemptRecord)">查看详情</el-button>
+              <p class="records-side-note">已纳入画像评分</p>
             </template>
             <el-empty v-else :image-size="56" description="暂无作答记录" />
           </article>
@@ -975,25 +1363,31 @@ onBeforeUnmount(() => {
               <div class="records-side-meta">
                 <span>{{ latestAssistantRecord.time }}</span>
               </div>
-              <el-button text type="primary" @click="openRecord(latestAssistantRecord)">查看详情</el-button>
+              <p class="records-side-note">重点关注 {{ weakestDimensions[0]?.name || '知识基础' }} 与理解迁移</p>
             </template>
             <el-empty v-else :image-size="56" description="暂无小C对话" />
           </article>
 
           <article class="records-side-card">
+            <h3>当前画像变化</h3>
+            <div class="profile-change-list">
+              <span>{{ weakestDimensions[0]?.name || '知识基础' }}需要补强</span>
+              <span>{{ strongestDimension?.name || '协作表达' }}表现稳定</span>
+              <span>理解迁移建议加强</span>
+            </div>
+          </article>
+
+          <article class="records-side-card">
             <h3>联动建议</h3>
             <div class="action-row compact">
-              <span>{{ weakestDimensions[0]?.name || '当前重点' }}</span>
-              <p>{{ weakestDimensions[0]?.action || '继续完成学习任务，补充新的画像证据。' }}</p>
-            </div>
-            <div class="action-row compact">
-              <span>{{ strongestDimension?.name || '当前优势' }}</span>
-              <p>优先保留当前优势维度的训练频率，用它带动解释、迁移或复盘表达。</p>
+              <span>下一步</span>
+              <p>{{ evidenceAdvice }}</p>
             </div>
           </article>
         </aside>
       </div>
     </section>
+    </div>
 
     <el-dialog
       v-model="detailOpen"
@@ -1013,12 +1407,22 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="activeRecord.type === 'assistant'" class="assistant-qa-detail">
           <section class="qa-block question">
-            <span>问题</span>
-            <p>{{ activeAssistantQa.question }}</p>
+            <span>学生提问</span>
+            <p>{{ activeRecord.question || activeAssistantQa.question }}</p>
           </section>
           <section class="qa-block answer">
-            <span>回答</span>
-            <p>{{ activeAssistantQa.answer }}</p>
+            <span>小C回复摘要</span>
+            <p>{{ activeRecord.answerSummary || activeAssistantQa.answer }}</p>
+          </section>
+          <section class="qa-block advice">
+            <span>学习建议</span>
+            <p>{{ activeRecord.advice || '建议结合最近作答继续完成专项练习。' }}</p>
+          </section>
+          <section class="qa-block knowledge">
+            <span>关联知识点</span>
+            <div class="detail-tag-list">
+              <b v-for="point in activeRecord.relatedKnowledge" :key="point">{{ point }}</b>
+            </div>
           </section>
         </div>
         <pre v-else class="record-detail-text">{{ activeRecord.detail || activeRecord.summary }}</pre>
@@ -1033,7 +1437,13 @@ onBeforeUnmount(() => {
           </div>
           <div>
             <dt>画像影响</dt>
-            <dd>{{ activeRecord.type === 'assistant' ? '更新目标、表达、资源筛选和错题反思维度' : '更新得分趋势、知识基础、理解迁移和实践能力维度' }}</dd>
+            <dd>
+              <span class="detail-impact-list">
+                <b v-for="impact in activeRecord.impactChanges" :key="impact.name">
+                  {{ impact.name }} {{ impact.delta > 0 ? `+${impact.delta}` : impact.delta }}
+                </b>
+              </span>
+            </dd>
           </div>
         </dl>
         <el-button
@@ -1053,7 +1463,7 @@ onBeforeUnmount(() => {
 .profile-report-page {
   min-height: calc(100vh - 110px);
   margin: -18px;
-  padding: 24px 14px 32px;
+  padding: clamp(16px, 1.4vw, 28px);
   color: #152033;
   background:
     linear-gradient(rgba(15, 118, 110, 0.035) 1px, transparent 1px),
@@ -1063,14 +1473,18 @@ onBeforeUnmount(() => {
   background-size: 24px 24px, 24px 24px, auto, auto;
 }
 
-.profile-hero,
-.summary-grid,
-.core-grid,
-.analytics-grid,
-.records-card {
-  width: 100%;
-  max-width: none;
+.profile-dashboard-inner {
+  width: min(100%, 1680px);
   margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 1.2vw, 22px);
+}
+
+.profile-section {
+  margin: 0;
+  width: 100%;
+  min-width: 0;
 }
 
 .profile-hero {
@@ -1078,7 +1492,6 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 18px;
 }
 
 .eyebrow {
@@ -1099,25 +1512,25 @@ p {
 
 h1 {
   margin-bottom: 8px;
-  font-size: 32px;
+  font-size: clamp(28px, 2vw, 38px);
   line-height: 1.2;
   color: #10223f;
 }
 
 h2 {
   margin-bottom: 0;
-  font-size: 19px;
+  font-size: 21px;
   color: #10223f;
 }
 
 h3 {
   margin-bottom: 8px;
-  font-size: 16px;
+  font-size: 17px;
   color: #10223f;
 }
 
 .profile-hero p {
-  max-width: 1080px;
+  max-width: none;
   margin-bottom: 0;
   color: #5d6b7c;
   line-height: 1.7;
@@ -1125,9 +1538,8 @@ h3 {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(220px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: clamp(12px, 1vw, 16px);
 }
 
 .summary-card,
@@ -1139,7 +1551,7 @@ h3 {
 }
 
 .summary-card {
-  min-height: 88px;
+  min-height: 94px;
   padding: 16px;
   display: flex;
   align-items: center;
@@ -1147,8 +1559,8 @@ h3 {
 }
 
 .summary-icon {
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 8px;
   display: grid;
   place-items: center;
@@ -1159,14 +1571,25 @@ h3 {
 .summary-card strong {
   display: block;
   color: #10223f;
-  font-size: 24px;
+  font-size: 28px;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
 
 .summary-card span {
   color: #64748b;
-  font-size: 13px;
+  font-size: 14px;
+}
+
+.summary-card em {
+  display: block;
+  margin-top: 4px;
+  color: #0f766e;
+  font-size: 12px;
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .update-card {
@@ -1180,22 +1603,28 @@ h3 {
   line-height: 1.5;
 }
 
-.core-grid,
-.analytics-grid {
+.profile-main-grid,
+.profile-analysis-grid,
+.profile-evidence-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.28fr) minmax(420px, 0.72fr);
-  gap: 16px;
-  margin-bottom: 16px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.85fr);
+  gap: clamp(14px, 1.1vw, 20px);
+  align-items: start;
 }
 
 .report-card {
-  padding: 18px;
+  padding: clamp(16px, 1.1vw, 20px);
 }
 
-.radar-card,
-.insight-card,
-.records-card {
-  min-height: 680px;
+.insight-card {
+  min-height: 0;
+  max-height: 560px;
+  overflow: hidden;
+}
+
+.radar-card {
+  min-height: unset;
+  height: auto;
 }
 
 .card-head {
@@ -1228,15 +1657,19 @@ h3 {
 
 .radar-layout {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) 320px;
-  gap: 18px;
+  grid-template-columns: minmax(340px, 1fr) minmax(260px, 0.75fr);
+  gap: clamp(14px, 1.2vw, 20px);
   align-items: center;
+  min-height: 0;
 }
 
 .radar-svg {
   width: 100%;
-  max-height: 450px;
+  height: clamp(300px, 22vw, 380px);
+  max-width: 560px;
+  max-height: 380px;
   aspect-ratio: 1;
+  justify-self: center;
 }
 
 .radar-grid-line {
@@ -1285,7 +1718,12 @@ h3 {
 
 .dimension-focus {
   border-radius: 8px;
-  padding: 18px;
+  width: 100%;
+  max-width: 440px;
+  min-height: 250px;
+  padding: 24px;
+  align-self: center;
+  justify-self: center;
   background: #f5fbf9;
   border: 1px solid rgba(15, 118, 110, 0.14);
 }
@@ -1300,9 +1738,9 @@ h3 {
 
 .dimension-focus strong {
   display: block;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   color: #10223f;
-  font-size: 42px;
+  font-size: 52px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -1331,6 +1769,57 @@ h3 {
   border-radius: inherit;
 }
 
+.radar-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.radar-summary-card {
+  min-height: 118px;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #dbece8;
+  background: #f8fbfa;
+}
+
+.radar-summary-card span {
+  display: block;
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.radar-summary-card strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #10223f;
+  font-size: 17px;
+}
+
+.radar-summary-card p {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.55;
+}
+
+.radar-summary-card.risk {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.radar-summary-card.strength {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.radar-summary-card.advice {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
 .insight-list {
   display: grid;
   gap: 10px;
@@ -1344,8 +1833,9 @@ h3 {
 .insight-scroll {
   flex: 1;
   min-height: 0;
+  max-height: 468px;
   display: grid;
-  gap: 16px;
+  gap: 14px;
   overflow-y: auto;
   padding-right: 6px;
 }
@@ -1371,6 +1861,65 @@ h3 {
   border-radius: 8px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
+}
+
+.insight-item {
+  position: relative;
+  padding-left: 18px;
+}
+
+.insight-item::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 18px;
+  width: 5px;
+  height: calc(100% - 36px);
+  border-radius: 999px;
+  background: #14b8a6;
+}
+
+.insight-item.risk {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.insight-item.risk::before {
+  background: #f97316;
+}
+
+.insight-item.strength {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.insight-item.strength::before {
+  background: #22c55e;
+}
+
+.insight-item.advice,
+.insight-item.assistant {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
+.insight-item.attempt {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.insight-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.insight-item-head em {
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .insight-type {
@@ -1407,7 +1956,78 @@ h3 {
 
 .trend-chart {
   width: 100%;
-  min-height: 260px;
+  height: clamp(220px, 18vw, 280px);
+  min-height: 0;
+  max-height: 280px;
+}
+
+.trend-panel {
+  height: auto;
+  min-height: clamp(280px, 24vw, 340px);
+  max-height: 380px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
+  gap: clamp(14px, 1.2vw, 20px);
+  align-items: center;
+}
+
+.trend-diagnosis-card {
+  padding: 16px;
+  border: 1px solid #dbece8;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.trend-status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #0f766e;
+  background: #ccfbf1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trend-status.down {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.trend-status.up {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.trend-diagnosis-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.trend-diagnosis-card dt {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.trend-diagnosis-card dd {
+  margin: 2px 0 0;
+  color: #10223f;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.trend-diagnosis-card p {
+  margin-bottom: 10px;
+  color: #64748b;
+  line-height: 1.65;
+}
+
+.trend-diagnosis-card strong {
+  color: #0f766e;
+  line-height: 1.5;
 }
 
 .chart-grid {
@@ -1445,7 +2065,28 @@ h3 {
 
 .distribution-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+}
+
+.dimension-diagnosis-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.68fr);
+  gap: 16px;
+  align-items: center;
+}
+
+.diagnosis-card {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.dimension-mini-radar {
+  width: 100%;
+  min-height: 260px;
+  max-height: 280px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
 }
 
 .diagnosis-toolbar,
@@ -1487,13 +2128,13 @@ h3 {
 
 .scoring-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.9fr);
-  gap: 14px;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.72fr);
+  gap: 16px;
+  align-items: center;
 }
 
 .scoring-bars {
-  min-height: 300px;
+  min-height: 260px;
   display: grid;
   grid-template-columns: repeat(5, minmax(42px, 1fr));
   gap: 10px;
@@ -1508,7 +2149,7 @@ h3 {
 
 .scoring-bar-row {
   min-width: 0;
-  height: 270px;
+  height: 240px;
   display: grid;
   grid-template-rows: 34px 1fr 38px;
   gap: 8px;
@@ -1526,7 +2167,7 @@ h3 {
 
 .scoring-bar-track {
   width: 18px;
-  height: 168px;
+  height: 146px;
   display: flex;
   align-items: end;
   border-radius: 999px;
@@ -1550,10 +2191,34 @@ h3 {
 
 .scoring-radar {
   width: 100%;
-  min-height: 300px;
+  min-height: 260px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.diagnosis-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #dbece8;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.diagnosis-summary p {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 10px;
+  margin: 0;
+  color: #475569;
+  line-height: 1.55;
+}
+
+.diagnosis-summary span {
+  color: #0f766e;
+  font-weight: 800;
 }
 
 .scoring-radar-area {
@@ -1608,18 +2273,66 @@ h3 {
 }
 
 .records-card {
-  margin-bottom: 20px;
+  min-height: 0;
 }
 
 .records-card .card-head {
   align-items: flex-start;
 }
 
-.records-layout {
+.profile-evidence-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-  gap: 18px;
-  align-items: stretch;
+  gap: 20px;
+  align-items: start;
+}
+
+.section-subtitle {
+  max-width: 980px;
+  margin: 6px 0 0;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.profile-sync-status {
+  min-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: #f0fdfa;
+}
+
+.profile-sync-status strong,
+.profile-sync-status span,
+.profile-sync-status em {
+  display: block;
+}
+
+.profile-sync-status strong {
+  color: #064e3b;
+  font-size: 14px;
+}
+
+.profile-sync-status span {
+  margin-top: 3px;
+  color: #0f766e;
+  font-size: 12px;
+}
+
+.profile-sync-status em {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.profile-sync-status.syncing {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.profile-sync-status.pending {
+  border-color: #fed7aa;
+  background: #fff7ed;
 }
 
 .records-main,
@@ -1636,10 +2349,11 @@ h3 {
 .records-side {
   display: grid;
   gap: 12px;
-  max-height: 720px;
+  max-height: 520px;
   overflow-y: auto;
-  padding-right: 6px;
+  padding-right: 4px;
   align-content: start;
+  position: static;
 }
 
 .records-side::-webkit-scrollbar {
@@ -1767,12 +2481,19 @@ h3 {
 }
 
 .record-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  max-height: 720px;
+  max-height: none;
   overflow-y: auto;
   padding-right: 6px;
   align-content: start;
+}
+
+.record-list.expanded {
+  max-height: min(58vh, 620px);
+  padding-right: 8px;
+  overscroll-behavior: contain;
 }
 
 .record-list::-webkit-scrollbar {
@@ -1790,21 +2511,24 @@ h3 {
   border: 2px solid #edf4f2;
 }
 
-.record-row {
-  display: flex;
-  align-items: stretch;
+.record-row,
+.evidence-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px;
+  align-items: center;
   gap: 10px;
 }
 
 .record-row-main {
   appearance: none;
-  width: 100%;
-  min-height: 72px;
+  width: auto;
+  min-width: 0;
+  min-height: 82px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 12px;
+  padding: 14px 16px;
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) 180px;
+  grid-template-columns: 72px minmax(0, 1fr) 120px;
   gap: 12px;
   align-items: center;
   text-align: left;
@@ -1815,6 +2539,7 @@ h3 {
 .record-row-main:hover {
   border-color: #5eead4;
   background: #f8fffd;
+  box-shadow: 0 10px 24px rgba(20, 83, 75, 0.08);
 }
 
 .record-type {
@@ -1858,11 +2583,60 @@ h3 {
   margin-bottom: 4px;
 }
 
+.record-title-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.record-title-line i {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 8px;
+  color: #0f766e;
+  background: #ccfbf1;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
 .record-main em {
   overflow: hidden;
   font-style: normal;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+}
+
+.record-impact-tags,
+.detail-impact-list,
+.detail-tag-list,
+.profile-change-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.record-impact-tags {
+  margin-top: 9px;
+}
+
+.record-impact-tags b,
+.detail-impact-list b,
+.detail-tag-list b,
+.profile-change-list span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #0f766e;
+  background: #ecfdf5;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .record-meta {
@@ -1880,6 +2654,35 @@ h3 {
   color: #64748b;
   font-size: 12px;
   font-style: normal;
+}
+
+.record-row-actions {
+  width: auto;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 0;
+}
+
+.record-delete-action {
+  color: #94a3b8;
+}
+
+.record-delete-action:hover {
+  color: #dc2626;
+}
+
+.evidence-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.records-side-note {
+  margin: 10px 0 0;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .profile-record-drawer :deep(.el-dialog) {
@@ -1960,6 +2763,14 @@ h3 {
   background: #ffffff;
 }
 
+.qa-block.advice {
+  background: #f0fdfa;
+}
+
+.qa-block.knowledge {
+  background: #eff6ff;
+}
+
 .record-detail dl {
   display: grid;
   gap: 12px;
@@ -1982,32 +2793,98 @@ h3 {
   line-height: 1.6;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1600px) {
+  .profile-dashboard-inner {
+    width: min(100%, 1480px);
+  }
+}
+
+@media (max-width: 1400px) {
+  .radar-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dimension-focus {
+    max-width: none;
+    justify-self: stretch;
+  }
+}
+
+@media (max-width: 1280px) {
+  .summary-card {
+    padding: 14px;
+  }
+
+  .summary-card strong {
+    font-size: 24px;
+  }
+
+  .profile-dashboard-inner {
+    width: 100%;
+  }
+
+  .profile-main-grid,
+  .profile-analysis-grid,
+  .profile-evidence-grid {
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+  }
+
+  .radar-layout,
+  .trend-panel,
+  .dimension-diagnosis-grid,
+  .scoring-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .radar-svg {
+    max-width: 560px;
+  }
+
+  .dimension-focus {
+    max-width: none;
+    justify-self: stretch;
+  }
+
+  .record-row-main {
+    grid-template-columns: 78px minmax(0, 1fr);
+  }
+
+  .record-meta {
+    grid-column: 2;
+    text-align: left;
+  }
+
+  .record-row-actions {
+    width: 118px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .profile-dashboard-inner {
+    width: 100%;
+  }
+
   .summary-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .core-grid,
-  .analytics-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .profile-hero,
-  .summary-grid,
-  .core-grid,
-  .analytics-grid,
-  .records-card {
-    width: 100%;
-  }
-
-  .records-layout {
+  .profile-main-grid,
+  .profile-analysis-grid,
+  .profile-evidence-grid {
     grid-template-columns: 1fr;
   }
 
   .records-side {
+    position: static;
     max-height: none;
     overflow: visible;
     padding-right: 0;
+  }
+
+  .diagnosis-card,
+  .insight-card {
+    max-height: none;
+    overflow: visible;
   }
 }
 
@@ -2031,10 +2908,19 @@ h3 {
 
   .radar-layout {
     grid-template-columns: 1fr;
+    min-height: 0;
   }
 
   .radar-svg {
     max-height: none;
+  }
+
+  .radar-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trend-panel {
+    min-height: 0;
   }
 
   .record-tabs {
@@ -2051,7 +2937,17 @@ h3 {
   }
 
   .record-row {
+    flex-direction: column;
+  }
+
+  .evidence-row {
     grid-template-columns: 1fr;
+  }
+
+  .record-row-actions {
+    width: auto;
+    display: flex;
+    align-items: center;
   }
 
   .record-meta {
