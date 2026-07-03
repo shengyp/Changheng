@@ -1,0 +1,1481 @@
+import { useState, useEffect } from 'react';
+import {
+  Settings, Server, Cloud, Plus, Edit, Trash2, Eye, X, FileCode, ChevronLeft,
+  ChevronRight, CheckCircle2, AlertCircle, Bot, Brain, KeyRound, Shield,
+} from 'lucide-react';
+import { formatDateTime, formatDate } from '../utils/dateFormat';
+import {
+  fetchModels, fetchPromptTemplates,
+  createPromptTemplate, updatePromptTemplate, deletePromptTemplate,
+  createModel, updateModel, deleteModel, updateModelApiKey,
+  type PromptTemplate,
+} from '../api';
+import ActionCapsuleButton from '../components/ActionCapsuleButton';
+import type { UnifiedModel } from '../types';
+
+type PresetOption = {
+  value: string;
+  label: string;
+  hint?: string;
+};
+
+const COMMON_OLLAMA_VARIANTS = ['0.5b', '1.5b', '3b', '7b', '8b', '14b', '27b', '30b', '32b', '70b', 'latest'];
+
+const OLLAMA_BASE_MODEL_PRESETS: Array<{
+  value: string;
+  label: string;
+  variants: string[];
+  note?: string;
+}> = [
+  { value: 'granite4.1', label: 'granite4.1', variants: ['3b', '8b', '30b'], note: '官方页面提供 3b / 8b / 30b 三种规格。' },
+  { value: 'qwen2', label: 'qwen2', variants: ['1.5b', '7b', '72b'] },
+  { value: 'qwen2.5', label: 'qwen2.5', variants: ['0.5b', '1.5b', '3b', '7b', '14b', '32b', '72b'] },
+  { value: 'deepseek-r1', label: 'deepseek-r1', variants: ['1.5b', '7b', '8b', '14b', '32b', '70b'] },
+  { value: 'deepseek-coder', label: 'deepseek-coder', variants: ['1.3b', '6.7b', '33b', 'latest'] },
+  { value: 'llama3', label: 'llama3', variants: ['8b', '70b'] },
+];
+
+const API_MODEL_ID_PRESETS: Record<string, PresetOption[]> = {
+  openai: [
+    { value: 'gpt-4.1', label: 'gpt-4.1' },
+    { value: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
+    { value: 'gpt-4o-mini', label: 'gpt-4o-mini' },
+  ],
+  zhipu: [
+    { value: 'glm-4.6', label: 'glm-4.6' },
+    { value: 'glm-4.7', label: 'glm-4.7' },
+    { value: 'glm-5', label: 'glm-5' },
+    { value: 'glm-5.1', label: 'glm-5.1' },
+  ],
+  deepseek: [
+    { value: 'deepseek-chat', label: 'deepseek-chat' },
+    { value: 'deepseek-reasoner', label: 'deepseek-reasoner' },
+  ],
+  dashscope: [
+    { value: 'qwen3.6-max-preview', label: 'qwen3.6-max-preview', hint: '更强推理' },
+    { value: 'qwen3-max', label: 'qwen3-max', hint: '旗舰通用' },
+    { value: 'qwen3-max-preview', label: 'qwen3-max-preview', hint: '思考模式' },
+    { value: 'qwen3.6-plus', label: 'qwen3.6-plus', hint: '均衡版' },
+    { value: 'qwen3.5-plus', label: 'qwen3.5-plus' },
+    { value: 'qwen3.6-flash', label: 'qwen3.6-flash', hint: '更快' },
+    { value: 'qwen3.5-flash', label: 'qwen3.5-flash' },
+    { value: 'qwen-plus-latest', label: 'qwen-plus-latest' },
+    { value: 'qwen-flash', label: 'qwen-flash' },
+  ],
+  moonshot: [
+    { value: 'moonshot-v1-8k', label: 'moonshot-v1-8k' },
+    { value: 'moonshot-v1-32k', label: 'moonshot-v1-32k' },
+    { value: 'moonshot-v1-128k', label: 'moonshot-v1-128k' },
+  ],
+  google: [
+    { value: 'gemini-2.0-flash', label: 'gemini-2.0-flash' },
+    { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
+    { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
+  ],
+  hunyuan: [
+    { value: 'hunyuan-lite', label: 'hunyuan-lite' },
+    { value: 'hunyuan-standard', label: 'hunyuan-standard' },
+    { value: 'hunyuan-turbo', label: 'hunyuan-turbo' },
+  ],
+};
+
+function parseOllamaModelIdentifier(value?: string): { base: string; variant: string } {
+  const raw = String(value || '').trim();
+  const lastColonIndex = raw.lastIndexOf(':');
+  if (lastColonIndex <= 0 || lastColonIndex === raw.length - 1) {
+    return { base: raw, variant: '' };
+  }
+  return {
+    base: raw.slice(0, lastColonIndex),
+    variant: raw.slice(lastColonIndex + 1),
+  };
+}
+
+function buildOllamaModelIdentifier(base: string, variant: string): string {
+  const normalizedBase = base.trim();
+  const normalizedVariant = variant.trim();
+  if (!normalizedBase) return '';
+  return normalizedVariant ? `${normalizedBase}:${normalizedVariant}` : normalizedBase;
+}
+
+function getVariantBadge(model: UnifiedModel): string {
+  if (model.modelCategory === 'local_llm') {
+    const parsed = parseOllamaModelIdentifier(model.ollamaModelName || '');
+    return parsed.variant;
+  }
+  if (model.modelCategory === 'api') {
+    return model.modelCode || '';
+  }
+  return '';
+}
+
+// ==================== API Key 配置弹窗 ====================
+function ApiKeyConfigModal({
+  isOpen, onClose, model, onSuccess,
+}: {
+  isOpen: boolean; onClose: () => void;
+  model?: UnifiedModel | null; onSuccess?: () => void;
+}) {
+  const [apiKey, setApiKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) { setApiKey(''); setError(null); }
+  }, [isOpen]);
+
+  if (!isOpen || !model) return null;
+
+  const providerLabel: Record<string, string> = {
+    dashscope: '通义千问（DashScope）',
+    hunyuan: '腾讯云混元',
+    openai: 'OpenAI',
+    zhipu: '智谱 GLM',
+    deepseek: 'DeepSeek',
+    moonshot: 'Kimi（月之暗面）',
+    google: 'Gemini（Google）',
+  };
+
+  const docLinks: Record<string, string> = {
+    dashscope: 'https://help.aliyun.com/zh/dashscope/',
+    hunyuan: 'https://cloud.tencent.com/document/product/',
+    openai: 'https://platform.openai.com/api-keys',
+    zhipu: 'https://open.bigmodel.cn/usercenter/apikeys',
+    deepseek: 'https://platform.deepseek.com/api_keys',
+    moonshot: 'https://platform.moonshot.cn/console/api-keys',
+    google: 'https://aistudio.google.com/app/apikey',
+  };
+
+  const label = providerLabel[model.provider || ''] || model.provider || 'API';
+
+  const handleSubmit = async () => {
+    if (!apiKey.trim()) { setError('请输入 API Key'); return; }
+    setSaving(true); setError(null);
+    try {
+      await updateModelApiKey(model.id, apiKey.trim());
+      onSuccess?.(); onClose();
+    } catch (err: any) {
+      setError(err?.message || err?.detail || '配置失败，请重试');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+      <div className="absolute inset-0 bg-black bg-opacity-40 pointer-events-auto" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg m-4 animate-scale-in border border-[#E2E8F0]">
+        <div className="flex items-center justify-between p-6 border-b border-[#E2E8F0]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#E8F0FF] flex items-center justify-center">
+              <KeyRound className="w-5 h-5 text-[#2F6BFF]" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-[#162033]">配置 API Key</h3>
+              <p className="text-xs text-[#64748B]">{model.modelName}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+            <X className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="bg-[#F3F8FF] rounded-xl p-4 border border-[#DCE7F5]">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 text-[#2F6BFF] mt-0.5 shrink-0" />
+              <div className="text-sm text-[#415168]">
+                <p className="font-medium mb-1">此模型需要配置 API Key 才能使用</p>
+                <p className="text-[#2F6BFF] text-xs">请到 <strong>{label}</strong> 官网申请 API Key，并在下方填写。</p>
+                {docLinks[model.provider || ''] && (
+                  <a href={docLinks[model.provider || '']} target="_blank" rel="noopener noreferrer"
+                    className="mt-1 inline-block text-[#2F6BFF] underline text-xs hover:text-[#1D4ED8]">
+                    获取 API Key →
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-[#162033] mb-2">
+              API Key <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-... 或对应的 API Key"
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-[#2F6BFF] focus:ring-2 focus:ring-blue-100 outline-none text-sm font-mono"
+              autoComplete="off"
+            />
+            <p className="mt-1.5 text-xs text-[#64748B]">API Key 将安全存储，不会明文显示在日志中</p>
+          </div>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">{error}</div>
+          )}
+        </div>
+        <div className="flex justify-end gap-3 p-5 border-t border-[#E2E8F0] bg-[#F7FAFD]">
+          <ActionCapsuleButton onClick={onClose} variant="neutral" size="lg">
+            取消
+          </ActionCapsuleButton>
+          <ActionCapsuleButton onClick={handleSubmit} disabled={saving} variant="solid" size="lg">
+            {saving ? '保存中...' : '确认配置'}
+          </ActionCapsuleButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== 确认删除弹窗 ====================
+function ConfirmModal({
+  isOpen, onClose, onConfirm, title, message, confirmText = '确认', loading = false,
+}: {
+  isOpen: boolean; onClose: () => void; onConfirm: () => void;
+  title: string; message: string; confirmText?: string; loading?: boolean;
+}) {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black bg-opacity-40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md m-4 animate-scale-in overflow-hidden border border-[#E2E8F0]">
+        <div className="p-6 text-center">
+          <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4 border border-red-200">
+            <Trash2 className="w-7 h-7 text-red-500" />
+          </div>
+          <h3 className="text-xl font-bold text-[#162033] mb-2">{title}</h3>
+          <p className="text-sm text-[#64748B]">{message}</p>
+        </div>
+        <div className="flex border-t border-[#E2E8F0]">
+          <ActionCapsuleButton onClick={onClose} variant="neutral" className="flex-1 rounded-none border-y-0 border-l-0 border-r border-[#E2E8F0] shadow-none">
+            取消
+          </ActionCapsuleButton>
+          <ActionCapsuleButton onClick={onConfirm} disabled={loading} variant="solid" tone="red" className="flex-1 rounded-none border-0 shadow-none">
+            {loading ? '删除中...' : confirmText}
+          </ActionCapsuleButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== 添加/编辑模型弹窗 ====================
+function AddModelModal({
+  isOpen, onClose, editData, onSuccess,
+}: {
+  isOpen: boolean; onClose: () => void;
+  editData?: UnifiedModel | null; onSuccess?: () => void;
+}) {
+  const apiTemplateConfigs: Record<string, {
+    label: string;
+    provider: string;
+    baseUrl: string;
+    modelNameExample: string;
+    apiKeyHint: string;
+    note: string;
+  }> = {
+    openai: {
+      label: 'OpenAI',
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      modelNameExample: 'gpt-4.1-mini',
+      apiKeyHint: 'sk-xxxxx',
+      note: '适用于 OpenAI 官方兼容接口，模型名建议填写官方模型 ID。',
+    },
+    zhipu: {
+      label: '智谱 GLM',
+      provider: 'zhipu',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+      modelNameExample: 'glm-4-flash',
+      apiKeyHint: '填写智谱平台生成的 API Key',
+      note: '适用于智谱 GLM 平台，常见模型如 glm-4 / glm-4-flash。',
+    },
+    deepseek: {
+      label: 'DeepSeek',
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      modelNameExample: 'deepseek-chat',
+      apiKeyHint: '填写 DeepSeek 平台生成的 API Key',
+      note: '适用于 DeepSeek 官方接口，常见模型如 deepseek-chat / deepseek-reasoner。',
+    },
+    dashscope: {
+      label: '通义千问',
+      provider: 'dashscope',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      modelNameExample: 'qwen-flash',
+      apiKeyHint: '填写阿里云 DashScope API Key',
+      note: '使用兼容 OpenAI 的 DashScope 接口时，建议模型名填写 qwen-plus / qwen-flash 等。',
+    },
+    moonshot: {
+      label: 'Kimi（月之暗面）',
+      provider: 'moonshot',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      modelNameExample: 'moonshot-v1-8k',
+      apiKeyHint: '填写 Moonshot 平台生成的 API Key',
+      note: '适用于 Kimi 官方接口，模型名通常为 moonshot-v1-*。',
+    },
+    google: {
+      label: 'Gemini（Google）',
+      provider: 'google',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      modelNameExample: 'gemini-2.0-flash',
+      apiKeyHint: '填写 Google AI Studio API Key',
+      note: '如果走 OpenAI 兼容层，建议使用 Gemini 的 OpenAI-compatible Base URL。',
+    },
+    hunyuan: {
+      label: '腾讯云混元',
+      provider: 'hunyuan',
+      baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+      modelNameExample: 'hunyuan-turbo',
+      apiKeyHint: '填写腾讯云混元 API Key',
+      note: '适用于腾讯云混元接口，模型名建议与腾讯云控制台保持一致。',
+    },
+  };
+
+  const [modelType, setModelType] = useState<'api' | 'local'>('api');
+  const [localModelSubType, setLocalModelSubType] = useState<'llm' | 'detection'>('llm');
+  const [detectionModelType, setDetectionModelType] = useState<'emoji'>('emoji');
+  const [llmDeployType] = useState<'ollama' | 'transformers'>('ollama');
+  const [formData, setFormData] = useState({
+    modelName: '', description: '', apiKey: '', baseUrl: '',
+    provider: '', configTemplate: '', apiModelId: '',
+    ollamaModelName: '', ollamaBaseModel: '', ollamaVariant: '',
+    modelPath: '', enabled: true,
+  });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const inferApiTemplateKey = (provider?: string, baseUrl?: string): string => {
+    const providerKey = String(provider || '').toLowerCase().trim();
+    const normalizedBaseUrl = String(baseUrl || '').toLowerCase().trim();
+
+    if (providerKey && providerKey in apiTemplateConfigs) return providerKey;
+    if (normalizedBaseUrl.includes('open.bigmodel.cn')) return 'zhipu';
+    if (normalizedBaseUrl.includes('api.deepseek.com')) return 'deepseek';
+    if (normalizedBaseUrl.includes('dashscope.aliyuncs.com')) return 'dashscope';
+    if (normalizedBaseUrl.includes('api.moonshot.cn')) return 'moonshot';
+    if (normalizedBaseUrl.includes('generativelanguage.googleapis.com')) return 'google';
+    if (normalizedBaseUrl.includes('api.hunyuan.cloud.tencent.com')) return 'hunyuan';
+    if (normalizedBaseUrl.includes('api.openai.com')) return 'openai';
+    return '';
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (editData) {
+      const m = editData as any;
+      const inferredTemplate = m.configTemplate || inferApiTemplateKey(m.provider, m.apiBaseUrl || m.api_base_url);
+      const modelCategory = m.modelCategory || m.model_category || '';
+      const modelTypeValue = m.modelType || m.model_type || '';
+      const ollamaIdentifier = m.ollamaModelName || m.ollama_model_name || '';
+      const parsedOllama = parseOllamaModelIdentifier(ollamaIdentifier);
+      const apiModelId = m.modelCode || m.model_code || m.modelName || m.name || '';
+      setFormData({
+        modelName: m.modelName || m.name || '',
+        description: m.description || '',
+        apiKey: m.apiKey || m.api_key || '',
+        baseUrl: m.apiBaseUrl || m.api_base_url || '',
+        provider: m.provider || '',
+        configTemplate: inferredTemplate,
+        apiModelId,
+        ollamaModelName: ollamaIdentifier,
+        ollamaBaseModel: parsedOllama.base,
+        ollamaVariant: parsedOllama.variant,
+        modelPath: m.modelPath || m.model_path || m.modelFilePath || '',
+        enabled: m.status === 'active',
+      });
+
+      if (modelCategory === 'api' || modelTypeValue === 'api') {
+        setModelType('api');
+      } else if (modelCategory === 'local_llm' || m.provider === 'ollama' || m.ollamaModelName || m.ollama_model_name) {
+        setModelType('local');
+        setLocalModelSubType('llm');
+      } else if (modelCategory === 'detection' || modelTypeValue === 'emoji') {
+        setModelType('local');
+        setLocalModelSubType('detection');
+        setDetectionModelType('emoji');
+      } else {
+        setModelType('local');
+        const path = m.modelPath || m.model_path || '';
+        if (path.includes('emoji') || (m.modelType && m.modelType === 'emoji')) {
+          setLocalModelSubType('detection'); setDetectionModelType('emoji');
+        } else {
+          setLocalModelSubType('llm');
+        }
+      }
+    } else {
+      setFormData({
+        modelName: '', description: '', apiKey: '', baseUrl: '',
+        provider: '', configTemplate: '', apiModelId: '',
+        ollamaModelName: '', ollamaBaseModel: '', ollamaVariant: '',
+        modelPath: '', enabled: true,
+      });
+      setModelType('api'); setLocalModelSubType('llm'); setDetectionModelType('emoji');
+    }
+    setSaveError(null);
+  }, [editData, isOpen]);
+
+  useEffect(() => {
+    if (modelType !== 'api') return;
+    if (!formData.configTemplate) return;
+
+    const templateConfig = apiTemplateConfigs[formData.configTemplate];
+    if (!templateConfig) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      baseUrl: templateConfig.baseUrl,
+      provider: templateConfig.provider,
+      apiModelId: prev.apiModelId || API_MODEL_ID_PRESETS[formData.configTemplate]?.[0]?.value || '',
+    }));
+  }, [formData.configTemplate, modelType]);
+
+  useEffect(() => {
+    if (modelType !== 'local' || localModelSubType !== 'llm') return;
+    setFormData((prev) => ({
+      ...prev,
+      ollamaModelName: buildOllamaModelIdentifier(prev.ollamaBaseModel, prev.ollamaVariant),
+    }));
+  }, [modelType, localModelSubType, formData.ollamaBaseModel, formData.ollamaVariant]);
+
+  useEffect(() => {
+    if (modelType !== 'local' || localModelSubType !== 'llm') return;
+    const matchedPreset = OLLAMA_BASE_MODEL_PRESETS.find((item) => item.value === formData.ollamaBaseModel);
+    if (!matchedPreset || formData.ollamaVariant) return;
+    setFormData((prev) => ({
+      ...prev,
+      ollamaVariant: matchedPreset.variants[0] || '',
+    }));
+  }, [modelType, localModelSubType, formData.ollamaBaseModel, formData.ollamaVariant]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async () => {
+    if (!formData.modelName.trim()) { setSaveError('请输入模型名称'); return; }
+    setSaving(true); setSaveError(null);
+    try {
+      const payload: any = {
+        modelName: formData.modelName, description: formData.description,
+        isAvailable: formData.enabled, status: formData.enabled ? 'active' : 'inactive',
+      };
+      if (modelType === 'api') {
+        const finalApiModelId = formData.apiModelId.trim();
+        if (!finalApiModelId) {
+          setSaveError('请选择或输入实际调用的模型 ID');
+          setSaving(false);
+          return;
+        }
+        Object.assign(payload, {
+          modelType: 'api', modelCategory: 'api',
+          modelCode: finalApiModelId,
+          apiKey: formData.apiKey, apiBaseUrl: formData.baseUrl,
+          provider: formData.provider,
+          configTemplate: formData.configTemplate || undefined,
+        });
+      } else {
+        if (localModelSubType === 'llm') {
+          const finalOllamaModelName = buildOllamaModelIdentifier(formData.ollamaBaseModel, formData.ollamaVariant);
+          if (!finalOllamaModelName) {
+            setSaveError('请选择或输入 Ollama 基座模型与规格');
+            setSaving(false);
+            return;
+          }
+          Object.assign(payload, {
+            modelType: llmDeployType, modelCategory: 'local_llm',
+            ollamaBaseUrl: 'http://localhost:11434',
+            ollamaModelName: finalOllamaModelName,
+            description: formData.description,
+          });
+        } else {
+          Object.assign(payload, {
+            modelType: detectionModelType, modelCategory: 'detection',
+            detectionType: detectionModelType,
+            modelPath: formData.modelPath, description: formData.description,
+          });
+        }
+      }
+      if (editData?.id) { await updateModel(editData.id, payload); }
+      else { await createModel(payload); }
+      onSuccess?.(); onClose();
+    } catch (err: any) {
+      setSaveError(err?.message || err?.detail || '保存失败，请重试');
+    } finally { setSaving(false); }
+  };
+
+  // Provider 配置
+  const providerLabel: Record<string, string> = {
+    dashscope: '通义千问（DashScope）',
+    hunyuan: '腾讯云混元',
+    openai: 'OpenAI',
+    zhipu: '智谱 GLM',
+    deepseek: 'DeepSeek',
+    moonshot: 'Kimi（月之暗面）',
+    google: 'Gemini（Google）',
+  };
+
+  const docLinks: Record<string, string> = {
+    dashscope: 'https://help.aliyun.com/zh/dashscope/',
+    hunyuan: 'https://cloud.tencent.com/document/product/',
+    openai: 'https://platform.openai.com/api-keys',
+    zhipu: 'https://open.bigmodel.cn/usercenter/apikeys',
+    deepseek: 'https://platform.deepseek.com/api_keys',
+    moonshot: 'https://platform.moonshot.cn/console/api-keys',
+    google: 'https://aistudio.google.com/app/apikey',
+  };
+
+  // 检查当前编辑的模型是否需要配置 API Key
+  const isApiModelEditing = modelType === 'api' && !!editData?.id;
+  const needsApiKeyHint = isApiModelEditing && editData?.modelCategory === 'api' && !editData?.hasApiKey;
+  const isEditing = !!editData?.id;
+  const selectedTemplate = formData.configTemplate ? apiTemplateConfigs[formData.configTemplate] : null;
+  const currentApiModelPresets = API_MODEL_ID_PRESETS[formData.configTemplate || formData.provider || ''] || [];
+  const selectedOllamaBasePreset = OLLAMA_BASE_MODEL_PRESETS.find((item) => item.value === formData.ollamaBaseModel);
+  const currentOllamaVariants = selectedOllamaBasePreset?.variants?.length ? selectedOllamaBasePreset.variants : COMMON_OLLAMA_VARIANTS;
+  const lockApiStructure = isEditing && modelType === 'api';
+  const lockModelType = isEditing;
+  const lockLocalSubType = isEditing && modelType === 'local';
+  const modelNamePlaceholder = modelType === 'api'
+    ? `例如：${selectedTemplate?.label || '通义千问'}-${selectedTemplate?.modelNameExample || 'qwen-flash'}`
+    : localModelSubType === 'llm'
+    ? '例如：DeepSeek-R1-7B（本地）'
+    : '例如：Emocc-Reddit';
+  const descriptionPlaceholder = modelType === 'api'
+    ? '例如：用于在线问答 / 风险复核 / 轻量推理'
+    : localModelSubType === 'llm'
+    ? '例如：本地 Ollama 模型，用于离线推理'
+    : '例如：情绪识别检测模型，输出风险辅助特征';
+  const apiModelIdPlaceholder = selectedTemplate?.modelNameExample || '例如：qwen3.6-plus / gpt-4.1-mini';
+  const ollamaIdentifierPreview = buildOllamaModelIdentifier(formData.ollamaBaseModel, formData.ollamaVariant);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black bg-opacity-40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto m-4 animate-scale-in">
+        <div className="flex items-center justify-between p-6 border-b border-[#E2E8F0]">
+          <h3 className="text-xl font-bold text-[#162033]">{editData ? '编辑模型' : '添加模型'}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+        </div>
+        <div className="p-6 space-y-5">
+          {/* API Key 未配置提示 */}
+          {needsApiKeyHint && (
+            <div className="bg-[#F3F8FF] rounded-xl p-4 border border-[#DCE7F5]">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 text-[#2F6BFF] mt-0.5 shrink-0" />
+                <div className="text-sm text-[#415168]">
+                  <p className="font-medium mb-1">此模型需要配置 API Key 才能使用</p>
+                  <p className="text-[#2F6BFF] text-xs">请在下方填写 API Key，或到 {providerLabel[formData.provider] || formData.provider} 官网申请。</p>
+                  {docLinks[formData.provider] && (
+                    <a href={docLinks[formData.provider]} target="_blank" rel="noopener noreferrer"
+                      className="mt-1 inline-block text-[#2F6BFF] underline text-xs hover:text-[#1D4ED8]">
+                      获取 API Key →
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-semibold text-[#162033] mb-2">模型类型</label>
+            {lockModelType ? (
+              <div className="flex gap-3">
+                {modelType === 'api' ? (
+                  <div className="flex-1 flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-[#2F6BFF] bg-[#F3F8FF]">
+                    <Cloud className="w-4 h-4 text-gray-500" /><span className="font-medium text-sm">API 模型</span>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-[#2F6BFF] bg-[#F3F8FF]">
+                    <Server className="w-4 h-4 text-gray-500" /><span className="font-medium text-sm">本地模型</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex gap-3">
+                <label className={`flex-1 flex items-center gap-2 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all ${modelType === 'api' ? 'border-[#2F6BFF] bg-[#F3F8FF]' : 'border-gray-200 hover:border-gray-300'}`}>
+                  <input type="radio" name="mt" checked={modelType === 'api'} onChange={() => setModelType('api')} className="w-4 h-4 text-[#2F6BFF]" />
+                  <Cloud className="w-4 h-4 text-gray-500" /><span className="font-medium text-sm">API 模型</span>
+                </label>
+                <label className={`flex-1 flex items-center gap-2 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all ${modelType === 'local' ? 'border-[#2F6BFF] bg-[#F3F8FF]' : 'border-gray-200 hover:border-gray-300'}`}>
+                  <input type="radio" name="mt" checked={modelType === 'local'} onChange={() => setModelType('local')} className="w-4 h-4 text-[#2F6BFF]" />
+                  <Server className="w-4 h-4 text-gray-500" /><span className="font-medium text-sm">本地模型</span>
+                </label>
+              </div>
+            )}
+          </div>
+          <div className="border-t border-gray-100 pt-4 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-[#162033] mb-1.5">模型名称 <span className="text-red-500">*</span></label>
+              <input type="text" value={formData.modelName} onChange={(e) => setFormData({...formData, modelName: e.target.value})} placeholder={modelNamePlaceholder}
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] focus:ring-2 focus:ring-blue-100 outline-none transition-all text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#162033] mb-1.5">模型描述</label>
+              <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder={descriptionPlaceholder} rows={2}
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none transition-all text-sm resize-none" />
+            </div>
+            {modelType === 'api' ? (
+              <div className="space-y-3 pl-3 border-l-2 border-[#DCE7F5]">
+                <div>
+                  <label className="block text-sm font-medium text-[#162033] mb-1.5">配置模板</label>
+                    <select value={formData.configTemplate} disabled={lockApiStructure} onChange={(e) => setFormData({...formData, configTemplate: e.target.value})}
+                      className={`w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none text-sm ${lockApiStructure ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : 'focus:border-[#2F6BFF] bg-white'}`}>
+                    <option value="">自定义</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="zhipu">智谱 GLM</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="dashscope">通义千问</option>
+                    <option value="moonshot">Kimi（月之暗面）</option>
+                    <option value="google">Gemini（Google）</option>
+                    <option value="hunyuan">腾讯云混元</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#162033] mb-1.5">模型调用 ID <span className="text-red-500">*</span></label>
+                  {currentApiModelPresets.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {currentApiModelPresets.map((item) => (
+                        <button
+                          key={item.value}
+                          type="button"
+                          onClick={() => setFormData({ ...formData, apiModelId: item.value })}
+                          className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
+                            formData.apiModelId === item.value
+                              ? 'border-[#2F6BFF] bg-[#E8F0FF] text-[#2F6BFF]'
+                              : 'border-[#DCE7F5] bg-white text-[#64748B] hover:border-[#93C5FD] hover:text-[#2F6BFF]'
+                          }`}
+                        >
+                          {item.label}
+                          {item.hint ? <span className="ml-1 text-[10px] opacity-80">{item.hint}</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    type="text"
+                    value={formData.apiModelId}
+                    onChange={(e) => setFormData({ ...formData, apiModelId: e.target.value })}
+                    placeholder={apiModelIdPlaceholder}
+                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm font-mono"
+                  />
+                  <p className="mt-1.5 text-xs text-[#64748B]">这里填写实际调用的模型 ID。可以点官方预设，也可以手动输入自定义版本。</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#162033] mb-1.5">Base URL</label>
+                  <input type="text" value={formData.baseUrl} readOnly={lockApiStructure} onChange={(e) => setFormData({...formData, baseUrl: e.target.value})} placeholder={selectedTemplate?.baseUrl || '例如：https://api.example.com/v1'}
+                    className={`w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none text-sm ${lockApiStructure ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : 'focus:border-[#2F6BFF]'}`} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#162033] mb-1.5">API Key</label>
+                  <input type="password" value={formData.apiKey} onChange={(e) => setFormData({...formData, apiKey: e.target.value})} placeholder={selectedTemplate?.apiKeyHint || 'sk-...'}
+                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#162033] mb-1.5">API 提供商</label>
+                  <input type="text" value={formData.provider} readOnly={lockApiStructure} onChange={(e) => setFormData({...formData, provider: e.target.value})} placeholder={selectedTemplate?.provider || '例如：openai、dashscope、zhipu'}
+                    className={`w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none text-sm ${lockApiStructure ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : 'focus:border-[#2F6BFF]'}`} />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 pl-3 border-l-2 border-[#DCE7F5]">
+                <div>
+                  <label className="block text-sm font-semibold text-[#162033] mb-2">本地模型类型</label>
+                  {lockLocalSubType ? (
+                    <div className="flex gap-3">
+                      {localModelSubType === 'llm' ? (
+                        <div className="flex-1 flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-[#2F6BFF] bg-[#F3F8FF]">
+                          <Bot className="w-4 h-4 text-gray-500" /><span className="text-sm font-medium">LLM</span>
+                        </div>
+                      ) : (
+                        <div className="flex-1 flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-[#2F6BFF] bg-[#F3F8FF]">
+                          <Brain className="w-4 h-4 text-gray-500" /><span className="text-sm font-medium">检测模型</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex gap-3">
+                      <label className={`flex-1 flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-all ${localModelSubType === 'llm' ? 'border-[#2F6BFF] bg-[#F3F8FF]' : 'border-gray-200'}`}>
+                        <input type="radio" name="lmt" checked={localModelSubType === 'llm'} onChange={() => setLocalModelSubType('llm')} className="w-4 h-4 text-[#2F6BFF]" />
+                        <Bot className="w-4 h-4 text-gray-500" /><span className="text-sm font-medium">LLM</span>
+                      </label>
+                      <label className={`flex-1 flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-all ${localModelSubType === 'detection' ? 'border-[#2F6BFF] bg-[#F3F8FF]' : 'border-gray-200'}`}>
+                        <input type="radio" name="lmt" checked={localModelSubType === 'detection'} onChange={() => setLocalModelSubType('detection')} className="w-4 h-4 text-[#2F6BFF]" />
+                        <Brain className="w-4 h-4 text-gray-500" /><span className="text-sm font-medium">检测模型</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+                {localModelSubType === 'llm' && (
+                  <div className="space-y-3 pl-3 border-l-2 border-[#DCE7F5]">
+                    <div>
+                      <label className="block text-sm font-medium text-[#162033] mb-1.5">基座模型</label>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {OLLAMA_BASE_MODEL_PRESETS.map((item) => (
+                          <button
+                            key={item.value}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, ollamaBaseModel: item.value })}
+                            className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
+                              formData.ollamaBaseModel === item.value
+                                ? 'border-[#2F6BFF] bg-[#E8F0FF] text-[#2F6BFF]'
+                                : 'border-[#DCE7F5] bg-white text-[#64748B] hover:border-[#93C5FD] hover:text-[#2F6BFF]'
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        type="text"
+                        value={formData.ollamaBaseModel}
+                        onChange={(e) => setFormData({ ...formData, ollamaBaseModel: e.target.value })}
+                        placeholder="例如：granite4.1 / qwen2.5 / deepseek-r1"
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm font-mono"
+                      />
+                      {selectedOllamaBasePreset?.note && (
+                        <p className="mt-1.5 text-xs text-[#64748B]">{selectedOllamaBasePreset.note}</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-[#162033] mb-1.5">参数规格 / Tag</label>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {currentOllamaVariants.map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, ollamaVariant: item })}
+                            className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
+                              formData.ollamaVariant === item
+                                ? 'border-[#2F6BFF] bg-[#E8F0FF] text-[#2F6BFF]'
+                                : 'border-[#DCE7F5] bg-white text-[#64748B] hover:border-[#93C5FD] hover:text-[#2F6BFF]'
+                            }`}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        type="text"
+                        value={formData.ollamaVariant}
+                        onChange={(e) => setFormData({ ...formData, ollamaVariant: e.target.value })}
+                        placeholder="例如：3b / 8b / 30b，也可手动输入自定义 tag"
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-[#162033] mb-1.5">生成的 Ollama 模型名</label>
+                      <input
+                        type="text"
+                        value={ollamaIdentifierPreview}
+                        readOnly
+                        placeholder="例如：granite4.1:3b"
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-500 font-mono"
+                      />
+                      <p className="mt-1.5 text-xs text-[#64748B]">系统会按这个名称去调用 Ollama。你可以点预设规格，也可以手动输入自定义参数 tag。</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-[#162033] mb-1.5">服务地址</label>
+                      <input type="text" value="http://localhost:11434" readOnly
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-100 bg-gray-50 text-sm text-gray-400" />
+                    </div>
+                  </div>
+                )}
+                {localModelSubType === 'detection' && (
+                  <div className="space-y-3 pl-3 border-l-2 border-[#DCE7F5]">
+                    <div>
+                      <label className="block text-sm font-medium text-[#162033] mb-1.5">模型类型</label>
+                      <select value={detectionModelType} onChange={(e) => setDetectionModelType(e.target.value as 'emoji')}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] focus:outline-none text-sm bg-white">
+                        <option value="emoji">情绪表情模型</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-[#162033] mb-1.5">模型路径（.pkl / .onnx）</label>
+                      <input type="text" value={formData.modelPath} onChange={(e) => setFormData({...formData, modelPath: e.target.value})}
+                        placeholder="例如：/app/data/models/emoji_model/reddit.pkl"
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] focus:outline-none text-sm" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="flex items-center gap-3 pt-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={formData.enabled} onChange={(e) => setFormData({...formData, enabled: e.target.checked})} className="w-4 h-4 text-[#2F6BFF] rounded" />
+                <span className="text-sm font-medium text-[#162033]">启用</span>
+              </label>
+            </div>
+          </div>
+          {saveError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">{saveError}</div>
+          )}
+        </div>
+        <div className="flex justify-end gap-3 p-5 border-t border-gray-100">
+          <ActionCapsuleButton onClick={onClose} variant="neutral">取消</ActionCapsuleButton>
+          <ActionCapsuleButton onClick={handleSubmit} disabled={saving} variant="solid">
+            {saving ? '保存中...' : '确认'}
+          </ActionCapsuleButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== 创建/编辑指令模板弹窗 ====================
+function TemplateModal({
+  isOpen, onClose, editData, onSuccess,
+}: {
+  isOpen: boolean; onClose: () => void; editData?: PromptTemplate | null; onSuccess?: () => void;
+}) {
+  const [formData, setFormData] = useState({ name: '', taskType: '', description: '', promptContent: '', remarks: '' });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (editData) {
+      setFormData({
+        name: editData.name || '',
+        taskType: editData.taskType || '',
+        description: editData.description || '',
+        promptContent: (editData as any).promptContent || (editData as any).content || '',
+        remarks: '',
+      });
+    } else {
+      setFormData({ name: '', taskType: '', description: '', promptContent: '', remarks: '' });
+    }
+    setSaveError(null);
+  }, [editData, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async () => {
+    if (!formData.name.trim()) { setSaveError('请输入模板名称'); return; }
+    if (!formData.taskType) { setSaveError('请选择任务类型'); return; }
+    if (!formData.promptContent.trim()) { setSaveError('请输入提示词内容'); return; }
+    setSaving(true); setSaveError(null);
+    try {
+      const payload = {
+        name: formData.name, taskType: formData.taskType,
+        description: formData.description, promptContent: formData.promptContent,
+        isActive: true,
+      };
+      if (editData?.id) { await updatePromptTemplate(editData.id, payload); }
+      else { await createPromptTemplate(payload as any); }
+      onSuccess?.(); onClose();
+    } catch (err: any) {
+      setSaveError(err?.message || err?.detail || '保存失败，请重试');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black bg-opacity-40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto m-4 animate-scale-in">
+        <div className="flex items-center justify-between p-6 border-b border-[#E2E8F0]">
+          <h3 className="text-xl font-bold text-[#162033]">{editData ? '编辑指令模板' : '创建指令模板'}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-[#162033] mb-1.5">模板名称 <span className="text-red-500">*</span></label>
+            <input type="text" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} placeholder="请输入模板名称"
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] focus:ring-2 focus:ring-blue-100 outline-none text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#162033] mb-1.5">任务类型 <span className="text-red-500">*</span></label>
+            <select value={formData.taskType} onChange={(e) => setFormData({...formData, taskType: e.target.value})}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm bg-white">
+              <option value="">请选择任务类型</option>
+              <option value="自杀风险检测">自杀风险检测</option><option value="抑郁筛查">抑郁筛查</option>
+              <option value="焦虑检测">焦虑检测</option><option value="压力评估">压力评估</option>
+              <option value="综合评估">综合评估</option><option value="其他">其他</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#162033] mb-1.5">检测类型/说明</label>
+            <input type="text" value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="如：文本风险检测、多模态联合检测等"
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#162033] mb-1.5">提示词内容 <span className="text-red-500">*</span></label>
+            <textarea value={formData.promptContent} onChange={(e) => setFormData({...formData, promptContent: e.target.value})}
+              placeholder="支持变量占位符如 &#123;&#123;user_input&#125;&#125;、&#123;&#123;context&#125;&#125;，用于调用大模型时的 system/user 模板"
+              rows={7}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-[#2F6BFF] outline-none text-sm resize-none font-mono" />
+          </div>
+          {saveError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">{saveError}</div>
+          )}
+        </div>
+        <div className="flex justify-end gap-3 p-5 border-t border-gray-100">
+          <ActionCapsuleButton onClick={onClose} variant="neutral">取消</ActionCapsuleButton>
+          <ActionCapsuleButton onClick={handleSubmit} disabled={saving} variant="solid">
+            {saving ? '保存中...' : '保存'}
+          </ActionCapsuleButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== 查看指令模板详情弹窗 ====================
+function TemplateDetailModal({
+  isOpen, onClose, template,
+}: {
+  isOpen: boolean; onClose: () => void; template?: PromptTemplate | null;
+}) {
+  if (!isOpen || !template) return null;
+  const tpl = template as any;
+  const content = tpl.promptContent || tpl.content || '';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black bg-opacity-40" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col m-4 animate-scale-in border border-[#E2E8F0]">
+        <div className="flex items-center justify-between p-5 border-b border-[#E2E8F0] shrink-0">
+          <h3 className="text-lg font-bold text-[#162033]">模板详情</h3>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+        </div>
+        <div className="p-5 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-medium text-[#64748B]">模板名称</label>
+            <p className="font-semibold text-[#162033]">{template.name}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-medium text-[#64748B]">任务类型</label>
+            <span className="px-2.5 py-1 bg-[#E8F0FF] text-[#2F6BFF] text-xs font-medium rounded-lg">{template.taskType}</span>
+          </div>
+          {template.description && (
+            <div>
+              <label className="block text-sm font-medium text-[#64748B] mb-1">说明</label>
+              <p className="text-sm text-[#415168]">{template.description}</p>
+            </div>
+          )}
+          <div>
+            <label className="block text-sm font-medium text-[#64748B] mb-1">提示词内容</label>
+            <div className="bg-[#F7FAFD] rounded-xl p-4 border border-[#E2E8F0] max-h-64 overflow-y-auto custom-scrollbar">
+              <pre className="whitespace-pre-wrap text-[#415168] text-sm font-mono leading-relaxed">{content}</pre>
+            </div>
+          </div>
+          {template.usageCount !== undefined && (
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium text-[#64748B]">使用次数</label>
+              <p className="text-sm text-[#415168]">{template.usageCount}</p>
+            </div>
+          )}
+          {template.createdAt && (
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium text-[#64748B]">创建时间</label>
+              <p className="text-sm text-[#415168]">{formatDateTime(template.createdAt)}</p>
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end p-4 border-t border-[#E2E8F0] shrink-0">
+          <button onClick={onClose} className="px-5 py-2 rounded-xl bg-[#F1F5FA] hover:bg-[#E2E8F0] text-[#415168] text-sm font-medium transition-colors border border-[#E2E8F0]">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== 查看模型详情弹窗 ====================
+function ModelDetailModal({
+  isOpen, onClose, model,
+}: {
+  isOpen: boolean; onClose: () => void; model?: UnifiedModel | null;
+}) {
+  if (!isOpen || !model) return null;
+  const m = model;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+      <div className="absolute inset-0 bg-black bg-opacity-40 pointer-events-auto" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto m-4 animate-scale-in border border-[#E2E8F0]">
+        <div className="flex items-center justify-between p-6 border-b border-[#E2E8F0]">
+          <h3 className="text-xl font-bold text-[#162033]">模型详情</h3>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+        </div>
+        <div className="p-6 space-y-4 text-sm">
+          <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">模型名称</span><span className="font-semibold text-[#162033]">{m.modelName}</span></div>
+          {m.modelCode && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">调用 ID</span><span className="text-[#415168] font-mono text-xs">{m.modelCode}</span></div>
+          )}
+          <div className="flex items-center gap-3">
+            <span className="text-[#64748B] font-medium w-20">类型</span>
+            {m.modelType === 'emoji'
+              ? <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">Emocc 情绪检测</span>
+              : m.modelType === 'fealearner'
+              ? <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">FeaLearner 深度检测</span>
+              : m.modelCategory === 'api'
+              ? <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">API 模型</span>
+              : <span className="px-2 py-0.5 bg-teal-100 text-teal-700 rounded text-xs font-medium">本地 LLM</span>}
+          </div>
+          {m.isBuiltin && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">预置</span>
+              <span className="px-2 py-0.5 bg-teal-50 border border-teal-200 text-teal-600 rounded text-xs font-medium">系统预置模型，禁止删除</span>
+            </div>
+          )}
+          {m.provider && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">提供商</span><span className="text-[#415168]">{m.provider}</span></div>
+          )}
+          {m.ollamaModelName && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">Ollama名称</span><span className="text-[#415168] font-mono text-xs">{m.ollamaModelName}</span></div>
+          )}
+          {m.modelFilePath && m.modelType !== 'fealearner' && m.modelType !== 'emoji' && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">模型路径</span><span className="text-[#415168] font-mono text-xs break-all">{m.modelFilePath}</span></div>
+          )}
+          {m.embeddingFilePath && m.modelType !== 'fealearner' && m.modelType !== 'emoji' && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">嵌入文件</span><span className="text-[#415168] font-mono text-xs break-all">{m.embeddingFilePath}</span></div>
+          )}
+          {m.description && (
+            <div className="flex items-start gap-3"><span className="text-[#64748B] font-medium w-20 shrink-0">描述</span><span className="text-[#415168]">{m.description}</span></div>
+          )}
+          {m.performanceMetrics && (
+            <div>
+              <span className="text-[#64748B] font-medium w-20 float-left mr-2">性能指标</span>
+              <div className="ml-20 grid grid-cols-5 gap-2">
+                {Object.entries(m.performanceMetrics).map(([k, v]) => (
+                  <div key={k} className="bg-[#F7FAFD] rounded-lg p-2 text-center">
+                    <p className="text-[10px] text-[#64748B]">{k}</p>
+                    <p className="text-sm font-bold text-[#162033]">{typeof v === 'number' ? v.toFixed(3) : v}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">状态</span>
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
+              m.status === 'active' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-500'
+            }`}>
+              {m.status === 'active'
+                ? <><CheckCircle2 className="w-3.5 h-3.5" />可用</>
+                : <><AlertCircle className="w-3.5 h-3.5" />不可用</>}
+            </span>
+          </div>
+          {m.createdAt && (
+            <div className="flex items-center gap-3"><span className="text-[#64748B] font-medium w-20">创建时间</span><span className="text-[#415168]">{formatDateTime(m.createdAt)}</span></div>
+          )}
+        </div>
+        <div className="flex justify-end p-5 border-t border-[#E2E8F0]">
+          <button onClick={onClose} className="px-5 py-2 rounded-xl bg-[#F1F5FA] hover:bg-[#E2E8F0] text-[#415168] text-sm font-medium transition-colors border border-[#E2E8F0]">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== 主页面组件 ====================
+export default function ModelCenterPage() {
+  const isTemplatePage = window.location.pathname.includes('/template');
+  const [activeTab, setActiveTab] = useState<'model' | 'template'>(isTemplatePage ? 'template' : 'model');
+
+  const handleTabChange = (tab: 'model' | 'template') => {
+    setActiveTab(tab);
+  };
+
+  // Modal 状态
+  const [showAddModelModal, setShowAddModelModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showTemplateDetailModal, setShowTemplateDetailModal] = useState(false);
+  const [showModelDetailModal, setShowModelDetailModal] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [configApiKeyModel, setConfigApiKeyModel] = useState<UnifiedModel | null>(null);
+  const [editingTemplate, setEditingTemplate] = useState<PromptTemplate | null>(null);
+  const [viewingTemplate, setViewingTemplate] = useState<PromptTemplate | null>(null);
+  const [editingModel, setEditingModel] = useState<UnifiedModel | null>(null);
+  const [viewingModel, setViewingModel] = useState<UnifiedModel | null>(null);
+  const [deleteId, setDeleteId] = useState<{ type: 'model' | 'template'; id: number } | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // 数据状态
+  const [apiModels, setApiModels] = useState<UnifiedModel[]>([]);
+  const [localModels, setLocalModels] = useState<UnifiedModel[]>([]);
+  const [detectionModels, setDetectionModels] = useState<UnifiedModel[]>([]);
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+
+  const loadData = () => {
+    setModelsLoading(true);
+    fetchModels().then((models) => {
+      if (models && models.length > 0) {
+        setApiModels((models as UnifiedModel[]).filter((m) => m.modelCategory === 'api'));
+        setLocalModels((models as UnifiedModel[]).filter((m) => m.modelCategory === 'local_llm'));
+        const dsOrder = ['reddit', 'weibo', 'bigdata', 'sigir'];
+        const det = (models as UnifiedModel[]).filter((m) => m.modelCategory === 'detection');
+        det.sort((a, b) => {
+          const typeRank = (t: string | undefined) => (t === 'emoji' ? 0 : t === 'fealearner' ? 1 : 2);
+          const tr = typeRank(a.modelType) - typeRank(b.modelType);
+          if (tr !== 0) return tr;
+          const da = a.supportedDatasets?.[0] || '';
+          const db = b.supportedDatasets?.[0] || '';
+          const ir = dsOrder.indexOf(da);
+          const jr = dsOrder.indexOf(db);
+          const dsCmp = (ir === -1 ? 99 : ir) - (jr === -1 ? 99 : jr);
+          if (dsCmp !== 0) return dsCmp;
+          return (a.modelName || '').localeCompare(b.modelName || '', 'zh-CN');
+        });
+        setDetectionModels(det);
+      }
+    }).catch(console.error).finally(() => setModelsLoading(false));
+
+    setTemplatesLoading(true);
+    fetchPromptTemplates().then((templates) => {
+      if (templates) setPromptTemplates(templates);
+    }).catch(console.error).finally(() => setTemplatesLoading(false));
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  // 分页
+  const [templatePage, setTemplatePage] = useState(1);
+  const templatesPerPage = 10;
+  const allTemplates = promptTemplates;
+  const totalTemplatePages = Math.ceil(allTemplates.length / templatesPerPage) || 1;
+  const paginatedTemplates = allTemplates.slice((templatePage - 1) * templatesPerPage, templatePage * templatesPerPage);
+
+  // 详情/编辑
+  const handleViewTemplate = (t: PromptTemplate) => { setViewingTemplate(t); setShowTemplateDetailModal(true); };
+  const handleEditTemplate = (t: PromptTemplate) => { setEditingTemplate(t); setShowTemplateModal(true); };
+  const handleViewModel = (m: UnifiedModel) => { setViewingModel(m); setShowModelDetailModal(true); };
+  const handleEditModel = (m: UnifiedModel) => { setEditingModel(m); setShowAddModelModal(true); };
+
+  // 删除处理
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    setDeleteLoading(true);
+    try {
+      if (deleteId.type === 'model') { await deleteModel(deleteId.id); }
+      else { await deletePromptTemplate(deleteId.id); }
+      setDeleteId(null);
+      loadData();
+    } catch (err) {
+      console.error(err);
+    } finally { setDeleteLoading(false); }
+  };
+
+  // 判断 API 模型是否需要配置 API Key
+  const needsApiKey = (m: UnifiedModel) =>
+    m.modelCategory === 'api' && !m.hasApiKey && m.isBuiltin;
+
+  const ModelRow = ({ model }: { model: UnifiedModel }) => {
+    const m = model;
+    const isBuiltin = !!m.isBuiltin;
+    const apiNeedsKey = needsApiKey(m);
+    const variantBadge = getVariantBadge(m);
+
+    return (
+      <div className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#F7FAFD] transition-colors border-b border-[#E2E8F0] last:border-0">
+        {/* 模型图标 */}
+        <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+          m.modelType === 'emoji' || m.modelType === 'fealearner' ? 'bg-purple-100' :
+          m.modelCategory === 'api' ? 'bg-blue-100' : 'bg-teal-100'
+        }`}>
+          {m.modelType === 'emoji' ? <span className="text-base">🎭</span>
+            : m.modelType === 'fealearner' ? <Brain className="w-4 h-4 text-purple-500" />
+            : <Bot className="w-4 h-4 text-blue-500" />}
+        </div>
+
+        {/* 模型信息 */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="font-semibold text-sm text-[#162033] truncate">{m.modelName}</p>
+            {variantBadge && (
+              <span className="shrink-0 inline-flex items-center max-w-[180px] px-2 py-0.5 rounded-md text-[10px] font-medium bg-[#F3F8FF] border border-[#DCE7F5] text-[#2F6BFF] truncate">
+                {variantBadge}
+              </span>
+            )}
+            {isBuiltin && (
+              <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-teal-50 border border-teal-200 text-teal-600">
+                <Shield className="w-2.5 h-2.5" />预置
+              </span>
+            )}
+            {apiNeedsKey && (
+              <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#E8F0FF] border border-[#BFD3F2] text-[#2F6BFF]">
+                <KeyRound className="w-2.5 h-2.5" />待配置
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-400 truncate">
+            {m.modelCategory === 'detection' && (m.modelType === 'fealearner' || m.modelType === 'emoji')
+              ? [
+                  m.supportedDatasets?.length ? `适用：${m.supportedDatasets.join(' / ')}` : null,
+                  m.modelCode ? `调用 ID：${m.modelCode}` : null,
+                ].filter(Boolean).join(' · ') || '本地检测模型'
+              : `${m.provider ? `${m.provider} · ` : ''}${m.ollamaModelName ? `Ollama: ${m.ollamaModelName}` : m.modelCode ? `模型ID: ${m.modelCode}` : m.modelType || '—'}`}
+          </p>
+        </div>
+
+        {/* 操作按钮组 */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* 可用状态 */}
+          <button
+            type="button"
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1 ${
+              m.status === 'active'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                : 'bg-slate-50 border-slate-200 text-slate-500'
+            }`}>
+            {m.status === 'active' ? <CheckCircle2 className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+            {m.status === 'active' ? '可用' : '不可用'}
+          </button>
+
+          {/* 编辑 */}
+          <ActionCapsuleButton type="button"
+            onClick={() => requestAnimationFrame(() => handleEditModel(m))}
+            tone="blue"
+            tableAction
+            icon={<Edit className="w-3 h-3" />}>
+            编辑
+          </ActionCapsuleButton>
+          {/* 详情 */}
+          <ActionCapsuleButton type="button"
+            onClick={() => requestAnimationFrame(() => handleViewModel(m))}
+            tone="slate"
+            tableAction
+            icon={<Eye className="w-3 h-3" />}>
+            详情
+          </ActionCapsuleButton>
+          {/* 删除 */}
+          {!isBuiltin && (
+            <ActionCapsuleButton type="button"
+              onClick={() => requestAnimationFrame(() => setDeleteId({ type: 'model', id: m.id }))}
+              tone="red"
+              tableAction
+              icon={<Trash2 className="w-3 h-3" />}>
+              删除
+            </ActionCapsuleButton>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const TemplateRow = ({ template }: { template: PromptTemplate }) => {
+    return (
+      <tr className="hover:bg-[#F7FAFD] transition-colors border-b border-[#E2E8F0] last:border-0">
+        <td className="px-4 py-3.5"><span className="font-medium text-sm text-[#162033]">{template.name}</span></td>
+        <td className="px-4 py-3.5"><span className="px-2 py-0.5 bg-[#E8F0FF] text-[#2F6BFF] text-xs font-medium rounded-lg">{template.taskType}</span></td>
+        <td className="px-4 py-3.5 text-sm text-gray-500 max-w-xs truncate">{template.description || '—'}</td>
+        <td className="px-4 py-3.5 text-xs text-gray-400">{formatDate(template.createdAt)}</td>
+        <td className="px-4 py-3.5">
+          <div className="flex items-center justify-center gap-1.5">
+            <ActionCapsuleButton onClick={() => handleEditTemplate(template)} tone="blue" tableAction icon={<Edit className="w-3.5 h-3.5" />}>
+              编辑
+            </ActionCapsuleButton>
+            <ActionCapsuleButton onClick={() => handleViewTemplate(template)} tone="slate" tableAction icon={<Eye className="w-3.5 h-3.5" />}>
+              详情
+            </ActionCapsuleButton>
+            <ActionCapsuleButton onClick={() => setDeleteId({ type: 'template', id: template.id })} tone="red" tableAction icon={<Trash2 className="w-3.5 h-3.5" />}>
+              删除
+            </ActionCapsuleButton>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
+  return (
+    <div className="model-center-page-shell animate-fade-in">
+      {/* 选项卡 */}
+      <div className="model-center-tabbar">
+        <button onClick={() => handleTabChange('model')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all ${
+            activeTab === 'model' ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'
+          }`}>
+          <Settings className="w-4 h-4" />模型管理
+        </button>
+        <button onClick={() => handleTabChange('template')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all ${
+            activeTab === 'template' ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'
+          }`}>
+          <FileCode className="w-4 h-4" />指令模板管理
+        </button>
+      </div>
+
+      <div className="model-center-content">
+        {activeTab === 'model' ? (
+          <div className="model-center-stack">
+            {/* 添加工具栏 */}
+            <div className="model-center-toolbar">
+              <ActionCapsuleButton onClick={() => { setEditingModel(null); setShowAddModelModal(true); }} variant="solid" size="lg" icon={<Plus className="w-4 h-4" />}>
+                添加模型
+              </ActionCapsuleButton>
+              <span className="text-sm text-[#64748B]">
+                {modelsLoading ? '加载中...' : `${apiModels.length + localModels.length + detectionModels.length} 个模型`}
+              </span>
+            </div>
+
+            {/* API 模型 */}
+            <div className="model-center-section">
+              <div className="flex items-center gap-3 px-5 py-3.5 bg-gradient-to-r from-[#F3F8FF] to-[#EDF4FF] border-b border-[#DCE7F5]">
+                <Cloud className="w-4 h-4 text-[#2F6BFF]" />
+                <span className="font-semibold text-sm text-[#162033]">API 模型</span>
+                <span className="ml-auto px-2 py-0.5 bg-[#E8F0FF] text-[#2F6BFF] text-xs font-medium rounded-full">
+                  {modelsLoading ? '...' : apiModels.length}
+                </span>
+              </div>
+              {modelsLoading ? (
+                <div className="p-8 text-center text-sm text-[#64748B]">加载中...</div>
+              ) : apiModels.length === 0 ? (
+                <div className="p-8 text-center text-sm text-[#64748B]">暂无 API 模型，点击上方按钮添加</div>
+              ) : (
+                apiModels.map((m) => <ModelRow key={m.id} model={m} />)
+              )}
+            </div>
+
+            {/* 本地 LLM 模型 */}
+            <div className="model-center-section">
+              <div className="flex items-center gap-3 px-5 py-3.5 bg-gradient-to-r from-teal-50 to-teal-100/50 border-b border-teal-100">
+                <Server className="w-4 h-4 text-teal-600" />
+                <span className="font-semibold text-sm text-[#162033]">本地 LLM 模型</span>
+                <span className="ml-auto px-2 py-0.5 bg-teal-200 text-teal-700 text-xs font-medium rounded-full">
+                  {modelsLoading ? '...' : localModels.length}
+                </span>
+              </div>
+              {modelsLoading ? (
+                <div className="p-8 text-center text-sm text-[#64748B]">加载中...</div>
+              ) : localModels.length === 0 ? (
+                <div className="p-8 text-center text-sm text-[#64748B]">暂无本地模型，点击上方按钮添加</div>
+              ) : (
+                localModels.map((m) => <ModelRow key={m.id} model={m} />)
+              )}
+            </div>
+
+            {/* 检测模型 */}
+            <div className="model-center-section">
+              <div className="flex items-center gap-3 px-5 py-3.5 bg-gradient-to-r from-purple-50 to-purple-100/50 border-b border-purple-100">
+                <Brain className="w-4 h-4 text-purple-600" />
+                <span className="font-semibold text-sm text-[#162033]">检测模型</span>
+                <span className="ml-auto px-2 py-0.5 bg-purple-200 text-purple-700 text-xs font-medium rounded-full">
+                  {modelsLoading ? '...' : detectionModels.length}
+                </span>
+              </div>
+              {modelsLoading ? (
+                <div className="p-8 text-center text-sm text-[#64748B]">加载中...</div>
+              ) : detectionModels.length === 0 ? (
+                <div className="p-8 text-center text-sm text-[#64748B]">暂无可用的检测模型，点击上方按钮添加</div>
+              ) : (
+                detectionModels.map((m) => <ModelRow key={m.id} model={m} />)
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="model-center-stack">
+            {/* 模板工具栏 */}
+            <div className="model-center-toolbar">
+              <ActionCapsuleButton onClick={() => { setEditingTemplate(null); setShowTemplateModal(true); }} variant="solid" size="lg" icon={<Plus className="w-4 h-4" />}>
+                创建模板
+              </ActionCapsuleButton>
+              <span className="text-sm text-[#64748B]">
+                {templatesLoading ? '加载中...' : `共 ${allTemplates.length} 个模板`}
+              </span>
+            </div>
+
+            {/* 模板表格 */}
+            <div className="model-center-section">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-gradient-to-r from-[#F7FAFD] to-[#F3F8FF]">
+                    <th className="text-left px-4 py-3.5 text-xs font-semibold text-[#415168]">模板名称</th>
+                    <th className="text-left px-4 py-3.5 text-xs font-semibold text-[#415168]">任务类型</th>
+                    <th className="text-left px-4 py-3.5 text-xs font-semibold text-[#415168]">说明</th>
+                    <th className="text-left px-4 py-3.5 text-xs font-semibold text-[#415168]">创建时间</th>
+                    <th className="text-center px-4 py-3.5 text-xs font-semibold text-[#415168]">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {templatesLoading ? (
+                    <tr><td colSpan={5} className="text-center py-10 text-sm text-[#64748B]">加载中...</td></tr>
+                  ) : paginatedTemplates.length === 0 ? (
+                    <tr><td colSpan={5} className="text-center py-10 text-sm text-[#64748B]">暂无模板，点击上方按钮创建</td></tr>
+                  ) : (
+                    paginatedTemplates.map((t) => <TemplateRow key={t.id} template={t} />)
+                  )}
+                </tbody>
+              </table>
+
+              {/* 分页 */}
+              {totalTemplatePages > 1 && (
+                <div className="flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-[#F7FAFD] to-white border-t border-[#E2E8F0]">
+                  <span className="text-xs text-[#64748B]">
+                    显示 {(templatePage - 1) * templatesPerPage + 1}–{Math.min(templatePage * templatesPerPage, allTemplates.length)}，共 {allTemplates.length}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setTemplatePage(1)} disabled={templatePage === 1}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-50 transition-colors">
+                      首页
+                    </button>
+                    <button onClick={() => setTemplatePage(templatePage - 1)} disabled={templatePage === 1}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-50 transition-colors">
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    {Array.from({ length: Math.min(totalTemplatePages, 7) }, (_, i) => {
+                      const page = i + 1;
+                      return (
+                        <button key={page} onClick={() => setTemplatePage(page)}
+                          className={`w-8 h-8 rounded-lg text-xs font-medium transition-colors ${
+                            templatePage === page ? 'bg-[#2F6BFF] text-white' : 'hover:bg-gray-50 text-gray-600'
+                          }`}>
+                          {page}
+                        </button>
+                      );
+                    })}
+                    <button onClick={() => setTemplatePage(templatePage + 1)} disabled={templatePage >= totalTemplatePages}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-50 transition-colors">
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => setTemplatePage(totalTemplatePages)} disabled={templatePage >= totalTemplatePages}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs disabled:opacity-40 hover:bg-gray-50 transition-colors">
+                      末页
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 弹窗 */}
+      <AddModelModal
+        isOpen={showAddModelModal}
+        onClose={() => { setShowAddModelModal(false); setEditingModel(null); }}
+        editData={editingModel}
+        onSuccess={loadData}
+      />
+      <TemplateModal
+        isOpen={showTemplateModal}
+        onClose={() => { setShowTemplateModal(false); setEditingTemplate(null); }}
+        editData={editingTemplate}
+        onSuccess={() => { loadData(); setTemplatePage(1); }}
+      />
+      <TemplateDetailModal
+        isOpen={showTemplateDetailModal}
+        onClose={() => { setShowTemplateDetailModal(false); setViewingTemplate(null); }}
+        template={viewingTemplate}
+      />
+      <ModelDetailModal
+        isOpen={showModelDetailModal}
+        onClose={() => { setShowModelDetailModal(false); setViewingModel(null); }}
+        model={viewingModel}
+      />
+      <ApiKeyConfigModal
+        isOpen={showApiKeyModal}
+        onClose={() => { setShowApiKeyModal(false); setConfigApiKeyModel(null); }}
+        model={configApiKeyModel}
+        onSuccess={() => { setShowApiKeyModal(false); setConfigApiKeyModel(null); loadData(); }}
+      />
+      <ConfirmModal
+        isOpen={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        onConfirm={handleDelete}
+        title={`确认删除${deleteId?.type === 'model' ? '模型' : '模板'}？`}
+        message={deleteId?.type === 'model'
+          ? '内置模型禁止删除。用户模型删除后将无法恢复。'
+          : '删除后该模板将无法恢复。'}
+        confirmText="确认删除"
+        loading={deleteLoading}
+      />
+    </div>
+  );
+}
