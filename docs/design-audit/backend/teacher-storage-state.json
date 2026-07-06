@@ -1,0 +1,18 @@
+{
+  "cookies": [],
+  "origins": [
+    {
+      "origin": "http://localhost:5173",
+      "localStorage": [
+        {
+          "name": "qb_token",
+          "value": "design-audit-teacher-token"
+        },
+        {
+          "name": "qb_user",
+          "value": "{\"id\":2,\"username\":\"ich1\",\"displayName\":\"Ich1\",\"role\":\"TEACHER\"}"
+        }
+      ]
+    }
+  ]
+}

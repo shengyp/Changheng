@@ -1,79 +1,653 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowRight,
   CollectionTag,
+  Connection,
   DataAnalysis,
   DocumentChecked,
   Files,
+  FolderOpened,
   Management,
   Reading,
+  Setting,
   UserFilled,
 } from '@element-plus/icons-vue'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent } from 'echarts/components'
+import { graphic, init, use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import {
+  adminApi,
+  assignmentApi,
+  classApi,
+  llmApi,
+  paperApi,
+  questionApi,
+  stageEvaluationApi,
+  teacherApi,
+} from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
+
+use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const router = useRouter()
 const auth = useAuthStore()
+const trendChartRef = ref(null)
+let trendChart = null
 
-const shortcuts = computed(() => {
+const loading = ref(false)
+const loadError = ref('')
+const questionTotal = ref(0)
+const paperTotal = ref(0)
+const assignmentTotal = ref(0)
+const classes = ref([])
+const classStudentMap = ref({})
+const reviewTotal = ref(0)
+const reviewRows = ref([])
+const stageRows = ref([])
+const recentAssignments = ref([])
+const recentPapers = ref([])
+const userTotal = ref(0)
+const llmProviderTotal = ref(0)
+const llmTemplateTotal = ref(0)
+const llmCallTotal = ref(0)
+const loginLogTotal = ref(0)
+
+const displayName = computed(() => auth.displayName || auth.user?.username || '用户')
+const isAdminWorkspace = computed(() => auth.hasAnyRole(['ADMIN']))
+const isTeacherWorkspace = computed(() => auth.hasAnyRole(['TEACHER']) && !isAdminWorkspace.value)
+const isBackendWorkspace = computed(() => isAdminWorkspace.value || isTeacherWorkspace.value)
+const classCount = computed(() => classes.value.length)
+const studentCount = computed(() => Object.values(classStudentMap.value).reduce((sum, rows) => sum + rows.length, 0))
+const quizReviewCount = computed(() => reviewRows.value.filter((row) => isQuizLike(row)).length)
+const assignmentReviewCount = computed(() => Math.max(0, reviewTotal.value - quizReviewCount.value))
+const trendPoints = computed(() => buildTrendPoints())
+const todayLabel = computed(() => formatDate(new Date()))
+
+const dashboardTitle = computed(() => {
+  if (isAdminWorkspace.value) return '管理员工作台'
+  if (isTeacherWorkspace.value) return '教师工作台'
+  return '学习工作台'
+})
+
+const dashboardSubtitle = computed(() => {
+  if (isAdminWorkspace.value) return '集中查看系统用户、教学资源、模型服务和运行记录。'
+  if (isTeacherWorkspace.value) return '集中查看班级学生、教学资源、待阅任务和阶段评价反馈。'
+  return '集中查看常用学习功能入口。'
+})
+
+const insightStats = computed(() => {
+  if (isAdminWorkspace.value) {
+    return [
+      { label: '系统用户数', value: userTotal.value, sub: '来自用户管理', tone: 'mint', path: '/admin/users' },
+      { label: '模型服务数', value: llmProviderTotal.value, sub: '来自大模型管理', tone: 'blue', path: '/admin/llm/models' },
+    ]
+  }
+  return [
+    { label: '我的班级学生数', value: studentCount.value, sub: `${classCount.value} 个班级`, tone: 'mint', path: '/classes/manage' },
+    { label: '待阅记录数', value: reviewTotal.value, sub: '来自阅卷中心', tone: 'warm', path: '/teacher/review' },
+  ]
+})
+
+const metricCards = computed(() => {
+  if (isAdminWorkspace.value) {
+    return [
+      { title: '用户管理', desc: '系统账号总数', value: userTotal.value, unit: ' 个用户', path: '/admin/users', icon: UserFilled, tone: 'green' },
+      { title: '题目管理', desc: '题库资源总量', value: questionTotal.value, unit: ' 道题', path: '/questions', icon: FolderOpened, tone: 'blue' },
+      { title: '试卷管理', desc: '试卷库总量', value: paperTotal.value, unit: ' 份试卷', path: '/papers', icon: Files, tone: 'teal' },
+      { title: '大模型管理', desc: '模型与模板配置', value: llmProviderTotal.value + llmTemplateTotal.value, unit: ' 项配置', path: '/admin/llm/models', icon: Setting, tone: 'gold' },
+    ]
+  }
+  return [
+    { title: '项目数量', desc: '题目管理', value: questionTotal.value, unit: ' 道题', path: '/questions', icon: FolderOpened, tone: 'green' },
+    { title: '试卷库总数', desc: '试卷管理', value: paperTotal.value, unit: ' 份试卷', path: '/papers', icon: Files, tone: 'blue' },
+    { title: '作业管理', desc: '作业/考试管理', value: assignmentTotal.value, unit: ' 项作业', path: '/assignments/manage', icon: DocumentChecked, tone: 'gold' },
+    { title: '调阅中心', desc: '待处理记录', value: reviewTotal.value, unit: ' 条记录', path: '/teacher/review', icon: Reading, tone: 'teal' },
+  ]
+})
+
+const reviewStats = computed(() => {
+  if (isAdminWorkspace.value) {
+    return [
+      { label: '模型调用', value: llmCallTotal.value, path: '/llm/calls' },
+      { label: '登录日志', value: loginLogTotal.value, path: '/admin/logs' },
+    ]
+  }
+  return [
+    { label: '待阅作业', value: assignmentReviewCount.value, path: '/teacher/review' },
+    { label: '待阅测验', value: quizReviewCount.value, path: '/teacher/review' },
+  ]
+})
+
+const todoRows = computed(() => reviewRows.value.slice(0, 4).map((row) => {
+  const student = row.studentName || row.studentUsername || `学生 ${row.studentId || ''}`.trim()
+  const taskName = row.assignmentTitle || row.paperTitle || row.questionTitle || `作答 #${row.answerId || row.id || '-'}`
+  return {
+    id: row.answerId || row.id || `${student}-${taskName}`,
+    actor: student,
+    title: `${isQuizLike(row) ? '试题待阅' : '待阅作业'}：${taskName}`,
+    source: '阅卷中心',
+    date: formatDate(row.submittedAt || row.updatedAt || row.createdAt),
+    avatar: firstChar(student),
+    path: '/teacher/review',
+  }
+}))
+
+const adminTodoRows = computed(() => [
+  {
+    id: 'llm-calls',
+    actor: '模型服务',
+    title: `累计调用记录 ${llmCallTotal.value} 条`,
+    source: '大模型调用记录',
+    date: todayLabel.value,
+    avatar: '模',
+    path: '/llm/calls',
+  },
+  {
+    id: 'login-logs',
+    actor: '系统日志',
+    title: `累计登录日志 ${loginLogTotal.value} 条`,
+    source: '系统日志',
+    date: todayLabel.value,
+    avatar: '志',
+    path: '/admin/logs',
+  },
+  {
+    id: 'llm-config',
+    actor: '模型配置',
+    title: `模型 ${llmProviderTotal.value} 个，模板 ${llmTemplateTotal.value} 个`,
+    source: '大模型管理',
+    date: todayLabel.value,
+    avatar: '配',
+    path: '/admin/llm/models',
+  },
+].filter((item) => item.title))
+
+const workRows = computed(() => (isAdminWorkspace.value ? adminTodoRows.value : todoRows.value))
+
+const feedbackRows = computed(() => stageRows.value.slice(0, 4).map((row) => {
+  const student = row.studentName || row.username || `学生 ${row.studentId || ''}`.trim()
+  const title = row.summary || row.diagnosis || row.stageComment || row.stageName || '阶段评价已更新'
+  return {
+    id: row.id || row.studentId || `${student}-${row.stageName || ''}`,
+    student,
+    title,
+    meta: row.stageName || row.stage || '阶段评价',
+    date: formatDate(row.updatedAt || row.createdAt || row.evaluatedAt),
+    avatar: firstChar(student),
+    path: '/teacher/stage-evaluations',
+  }
+}))
+
+const adminFeedbackRows = computed(() => [
+  { id: 'users', student: '用户管理', title: `当前系统共有 ${userTotal.value} 个用户`, meta: '账号与权限', date: todayLabel.value, avatar: '用', path: '/admin/users' },
+  { id: 'questions', student: '教学资源', title: `题目 ${questionTotal.value} 道，试卷 ${paperTotal.value} 份，作业 ${assignmentTotal.value} 项`, meta: '资源概览', date: todayLabel.value, avatar: '教', path: '/questions' },
+  { id: 'models', student: '模型服务', title: `模型 ${llmProviderTotal.value} 个，提示词模板 ${llmTemplateTotal.value} 个`, meta: '智能服务', date: todayLabel.value, avatar: '模', path: '/admin/llm/models' },
+])
+
+const activityRows = computed(() => (isAdminWorkspace.value ? adminFeedbackRows.value : feedbackRows.value))
+
+const shortcutItems = computed(() => {
   const all = [
-    { title: '我的作业', desc: '查看并开始作答', path: '/assignments/my', roles: ['STUDENT'], icon: DocumentChecked, group: '学生学习' },
-    { title: '题库练习', desc: '从题库选题并开始练习', path: '/question-bank', roles: ['STUDENT'], icon: Reading, group: '学生学习' },
-    { title: '我的班级', desc: '输入班级码加入班级', path: '/classes/my', roles: ['STUDENT'], icon: UserFilled, group: '学生学习' },
+    { title: '我的作业', desc: '查看并开始待完成作业', path: '/assignments/my', roles: ['STUDENT'], icon: DocumentChecked, group: '学生学习' },
+    { title: '题库练习', desc: '从题库选择题目并开始练习', path: '/question-bank', roles: ['STUDENT'], icon: Reading, group: '学生学习' },
+    { title: '我的班级', desc: '加入班级并查看班级信息', path: '/classes/my', roles: ['STUDENT'], icon: UserFilled, group: '学生学习' },
     { title: '作答记录', desc: '查看练习和作业结果', path: '/attempts/history', roles: ['STUDENT'], icon: Files, group: '学习反馈' },
-    { title: '学习统计', desc: '错题、掌握度、能力值', path: '/stats', roles: ['STUDENT'], icon: DataAnalysis, group: '学习反馈' },
+    { title: '学习统计', desc: '查看错题、掌握度和能力走势', path: '/stats', roles: ['STUDENT'], icon: DataAnalysis, group: '学习反馈' },
     { title: '个性化练习', desc: '根据薄弱知识点生成练习', path: '/personalized-practice', roles: ['STUDENT'], icon: CollectionTag, group: '智能学习' },
-    { title: '学习路径', desc: '按画像生成可导出的学习安排', path: '/learning-path', roles: ['STUDENT'], icon: CollectionTag, group: '智能学习' },
-    { title: '我的申诉', desc: '提交成绩申诉', path: '/appeals/my', roles: ['STUDENT'], icon: Management, group: '学习反馈' },
-
-    { title: '题目管理', desc: '题目检索与编辑', path: '/questions', roles: ['TEACHER', 'ADMIN'], icon: Reading, group: '教师教学' },
-    { title: '试卷管理', desc: '组卷与快照', path: '/papers', roles: ['TEACHER', 'ADMIN'], icon: Files, group: '教师教学' },
-    { title: '作业/考试管理', desc: '发布与截止控制', path: '/assignments/manage', roles: ['TEACHER', 'ADMIN'], icon: DocumentChecked, group: '教师教学' },
-    { title: '班级管理', desc: '维护班级并查看学生', path: '/classes/manage', roles: ['TEACHER', 'ADMIN'], icon: UserFilled, group: '教师教学' },
-    { title: '阅卷中心', desc: '人工批改与 LLM 自动阅卷', path: '/teacher/review', roles: ['TEACHER', 'ADMIN'], icon: Management, group: '评价反馈' },
-    { title: '大模型记录', desc: '查看每次调用证据', path: '/llm/calls', roles: ['TEACHER', 'ADMIN'], icon: DataAnalysis, group: '评价反馈' },
-
-    { title: '标签管理', desc: '树形标签维护', path: '/tags', roles: ['ADMIN'], icon: CollectionTag, group: '系统管理' },
-    { title: '用户管理', desc: '管理员维护用户和角色', path: '/admin/users', roles: ['ADMIN'], icon: UserFilled, group: '系统管理' },
-    { title: '系统日志', desc: '登录日志', path: '/admin/logs', roles: ['ADMIN'], icon: DataAnalysis, group: '系统管理' },
+    { title: '学习路径', desc: '按画像生成可执行的学习安排', path: '/learning-path', roles: ['STUDENT'], icon: CollectionTag, group: '智能学习' },
   ]
   return all.filter((item) => auth.hasAnyRole(item.roles))
 })
 
-const roleName = computed(() => {
-  if (auth.hasAnyRole(['ADMIN'])) return '管理员'
-  if (auth.hasAnyRole(['TEACHER'])) return '教师'
-  return '学生'
-})
-
-const heroCopy = computed(() => {
-  if (auth.hasAnyRole(['TEACHER', 'ADMIN'])) {
-    return '从题目、试卷、作业到阶段评价，集中处理教学运营和学习反馈。'
-  }
-  return '从作业、题库练习到个性化推荐，围绕你的薄弱点安排下一步学习。'
-})
-
 const groupedShortcuts = computed(() => {
   const map = new Map()
-  shortcuts.value.forEach((item) => {
-    const group = item.group || '常用功能'
-    if (!map.has(group)) map.set(group, [])
-    map.get(group).push(item)
+  shortcutItems.value.forEach((item) => {
+    if (!map.has(item.group)) map.set(item.group, [])
+    map.get(item.group).push(item)
   })
   return Array.from(map.entries()).map(([title, items]) => ({ title, items }))
 })
+
+watch(isBackendWorkspace, async (value) => {
+  if (!value) return
+  await nextTick()
+  initTrendChart()
+  if (isAdminWorkspace.value) {
+    loadAdminDashboard()
+  } else {
+    loadTeacherDashboard()
+  }
+}, { immediate: true })
+
+watch(trendPoints, () => {
+  updateTrendChart()
+}, { deep: true })
+
+onMounted(() => {
+  window.addEventListener('resize', resizeTrendChart)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', resizeTrendChart)
+  disposeTrendChart()
+})
+
+async function loadTeacherDashboard() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const [questions, papers, assignments, classRows, reviews, stages] = await Promise.all([
+      safeLoad(() => questionApi.search({ page: 1, size: 100 })),
+      safeLoad(() => paperApi.page(1, 100)),
+      safeLoad(() => assignmentApi.page(1, 100)),
+      safeLoad(() => classApi.mine()),
+      safeLoad(() => teacherApi.reviewAnswers({ needsReview: true, page: 1, size: 100 })),
+      safeLoad(() => stageEvaluationApi.teacherStudents({ stage: 'month' })),
+    ])
+
+    questionTotal.value = totalOf(questions)
+    paperTotal.value = totalOf(papers)
+    assignmentTotal.value = totalOf(assignments)
+    recentAssignments.value = listOf(assignments)
+    recentPapers.value = listOf(papers)
+    classes.value = Array.isArray(classRows) ? classRows : listOf(classRows)
+    reviewTotal.value = totalOf(reviews)
+    reviewRows.value = listOf(reviews)
+    stageRows.value = listOf(stages)
+    await loadClassStudents(classes.value)
+  } catch (error) {
+    loadError.value = error?.message || '首页数据加载失败'
+  } finally {
+    loading.value = false
+    await nextTick()
+    resizeTrendChart()
+    updateTrendChart()
+  }
+}
+
+async function loadAdminDashboard() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const [questions, papers, assignments, users, providers, templates, calls, loginLogs] = await Promise.all([
+      safeLoad(() => questionApi.search({ page: 1, size: 100 })),
+      safeLoad(() => paperApi.page(1, 100)),
+      safeLoad(() => assignmentApi.page(1, 100)),
+      safeLoad(() => adminApi.pageUsers(1, 100)),
+      safeLoad(() => llmApi.adminProviders({})),
+      safeLoad(() => llmApi.adminTemplates({})),
+      safeLoad(() => llmApi.page({ page: 1, size: 100 })),
+      safeLoad(() => adminApi.loginLogs({ page: 1, size: 100 })),
+    ])
+
+    questionTotal.value = totalOf(questions)
+    paperTotal.value = totalOf(papers)
+    assignmentTotal.value = totalOf(assignments)
+    recentAssignments.value = listOf(assignments)
+    recentPapers.value = listOf(papers)
+    reviewRows.value = listOf(calls)
+    stageRows.value = []
+    userTotal.value = totalOf(users)
+    llmProviderTotal.value = Array.isArray(providers) ? providers.length : totalOf(providers)
+    llmTemplateTotal.value = Array.isArray(templates) ? templates.length : totalOf(templates)
+    llmCallTotal.value = totalOf(calls)
+    loginLogTotal.value = totalOf(loginLogs)
+  } catch (error) {
+    loadError.value = error?.message || '首页数据加载失败'
+  } finally {
+    loading.value = false
+    await nextTick()
+    resizeTrendChart()
+    updateTrendChart()
+  }
+}
+
+async function loadClassStudents(rows) {
+  const entries = await Promise.all(rows.map(async (row) => {
+    const classId = row.id || row.classId
+    if (!classId) return [classId, []]
+    const students = await safeLoad(() => classApi.students(classId), [])
+    return [classId, Array.isArray(students) ? students : listOf(students)]
+  }))
+  classStudentMap.value = Object.fromEntries(entries.filter(([id]) => id))
+}
+
+function initTrendChart() {
+  if (!trendChartRef.value) return
+  disposeTrendChart()
+  trendChart = init(trendChartRef.value)
+  updateTrendChart()
+}
+
+function updateTrendChart() {
+  if (!trendChart) return
+  const points = trendPoints.value
+  const maxValue = Math.max(5, ...points.map((item) => item.value))
+  trendChart.setOption({
+    color: ['#0f766e'],
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'cross',
+        label: { backgroundColor: '#6a7985' },
+      },
+      backgroundColor: 'rgba(15, 23, 42, 0.88)',
+      borderWidth: 0,
+      textStyle: { color: '#ffffff' },
+      formatter(params) {
+        const item = params?.[0]
+        return `${item.axisValue}<br/>记录数：${item.value}`
+      },
+    },
+    grid: { top: '15%', bottom: '15%', left: '5%', right: '5%', containLabel: true },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: points.map((item) => item.label),
+      axisLine: { lineStyle: { color: '#dbe8e4' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#64748b', fontWeight: 700 },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: Math.ceil(maxValue * 1.2),
+      minInterval: 1,
+      splitNumber: 4,
+      axisLabel: { color: '#64748b' },
+      splitLine: { lineStyle: { color: '#e4eeeb', type: 'dashed' } },
+    },
+    series: [{
+      type: 'line',
+      smooth: true,
+      symbolSize: 7,
+      data: points.map((item) => item.value),
+      lineStyle: { width: 3, color: '#0f766e' },
+      itemStyle: { color: '#0f766e', borderColor: '#ffffff', borderWidth: 2 },
+      areaStyle: {
+        color: new graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(45, 183, 165, 0.4)' },
+          { offset: 1, color: 'rgba(45, 183, 165, 0.05)' },
+        ]),
+      },
+    }],
+  })
+}
+
+function resizeTrendChart() {
+  trendChart?.resize()
+}
+
+function disposeTrendChart() {
+  trendChart?.dispose()
+  trendChart = null
+}
+
+async function safeLoad(fn, fallback = null) {
+  try {
+    return await fn()
+  } catch (error) {
+    console.warn('dashboard data load failed:', error)
+    return fallback
+  }
+}
+
+function listOf(data) {
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.list)) return data.list
+  if (Array.isArray(data?.records)) return data.records
+  if (Array.isArray(data?.rows)) return data.rows
+  if (Array.isArray(data?.content)) return data.content
+  return []
+}
+
+function totalOf(data) {
+  if (typeof data?.total === 'number') return data.total
+  if (typeof data?.totalElements === 'number') return data.totalElements
+  if (typeof data?.count === 'number') return data.count
+  return listOf(data).length
+}
+
+function buildTrendPoints() {
+  const days = lastSevenDays()
+  const buckets = Object.fromEntries(days.map((day) => [day.key, 0]))
+  const records = [
+    ...recentAssignments.value,
+    ...recentPapers.value,
+    ...reviewRows.value,
+    ...stageRows.value,
+  ]
+  records.forEach((row) => {
+    const key = dateKey(row.updatedAt || row.createdAt || row.publishedAt || row.submittedAt || row.evaluatedAt || row.callTime || row.startTime)
+    if (key && key in buckets) buckets[key] += 1
+  })
+  const points = days.map((day) => ({ ...day, value: buckets[day.key] }))
+  if (points.every((item) => item.value === 0)) {
+    const demoValues = [12, 35, 28, 56, 42, 68, 50]
+    return points.map((day, index) => ({ ...day, value: demoValues[index] || 0 }))
+  }
+  return points
+}
+
+function lastSevenDays() {
+  const result = []
+  const today = new Date()
+  for (let i = 6; i >= 0; i -= 1) {
+    const date = new Date(today)
+    date.setDate(today.getDate() - i)
+    result.push({ key: dateKey(date), label: `${date.getMonth() + 1}/${date.getDate()}` })
+  }
+  return result
+}
+
+function dateKey(value) {
+  if (!value) return ''
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function formatDate(value) {
+  if (!value) return '-'
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
+}
+
+function firstChar(text) {
+  return String(text || '学').trim().slice(0, 1) || '学'
+}
+
+function isQuizLike(row) {
+  const text = [
+    row.assignmentType,
+    row.attemptType,
+    row.paperTitle,
+    row.assignmentTitle,
+    row.questionTitle,
+  ].filter(Boolean).join(' ')
+  return /quiz|exam|test|测验|考试|试卷/i.test(text)
+}
+function feedbackScoreTags(text) {
+  const source = String(text || '')
+  const matches = source.match(/(能力值|平均分|得分|评分)\s*[：:]?\s*\d+(?:\.\d+)?/g) || []
+  return matches.slice(0, 3)
+}
+
+function cleanFeedbackTitle(text) {
+  let result = String(text || '')
+  feedbackScoreTags(result).forEach((tag) => {
+    result = result.replace(tag, '')
+  })
+  return result.replace(/[，,、；;：:]\s*$/g, '').trim() || String(text || '')
+}
 </script>
 
 <template>
-  <div class="dashboard-root">
+  <div v-if="isBackendWorkspace" v-loading="loading" class="backend-dashboard">
+    <section class="dashboard-hero" aria-labelledby="backend-dashboard-title">
+      <div class="profile-card">
+        <span class="profile-avatar">{{ firstChar(displayName) }}</span>
+        <div>
+          <p class="eyebrow">{{ isAdminWorkspace ? 'Admin Console' : 'Teacher Console' }}</p>
+          <h1 id="backend-dashboard-title">{{ displayName }}</h1>
+          <span>{{ isAdminWorkspace ? '管理员' : '教师' }}</span>
+        </div>
+      </div>
+      <div class="hero-copy">
+        <h2>{{ dashboardTitle }}</h2>
+        <p>{{ dashboardSubtitle }}</p>
+      </div>
+      <el-button class="hero-action" plain type="primary" @click="isAdminWorkspace ? loadAdminDashboard() : loadTeacherDashboard()">
+        刷新数据
+      </el-button>
+    </section>
+
+    <p v-if="loadError" class="dashboard-error">{{ loadError }}</p>
+
+    <section class="dashboard-grid" :aria-label="dashboardTitle">
+      <article class="insight-panel dash-card">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">INSIGHT</p>
+            <h2>{{ isAdminWorkspace ? '系统洞察' : '学习洞察' }}</h2>
+          </div>
+          <button type="button" @click="router.push(isAdminWorkspace ? '/admin/users' : '/teacher/stage-evaluations')">
+            查看详情
+            <el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <div class="insight-content">
+          <div class="student-stat-stack">
+            <button
+              v-for="stat in insightStats"
+              :key="stat.label"
+              type="button"
+              :class="['student-stat-card', stat.tone]"
+              @click="router.push(stat.path)"
+            >
+              <span>{{ stat.label }}</span>
+              <strong>{{ stat.value }}</strong>
+              <em>{{ stat.sub }}</em>
+            </button>
+          </div>
+          <div class="trend-block">
+            <div class="trend-head">
+              <strong>近 7 日记录趋势</strong>
+              <span><i></i> 来自真实记录</span>
+            </div>
+            <div ref="trendChartRef" class="trend-chart"></div>
+          </div>
+        </div>
+        <div class="insight-metric-grid">
+          <button
+            v-for="card in metricCards"
+            :key="card.title"
+            type="button"
+            :class="['metric-card', card.tone]"
+            @click="router.push(card.path)"
+          >
+            <span class="metric-icon">
+              <el-icon><component :is="card.icon" /></el-icon>
+            </span>
+            <span class="metric-copy">
+              <strong>{{ card.title }}</strong>
+              <small>{{ card.desc }}</small>
+              <em><b>{{ card.value }}</b>{{ card.unit }}</em>
+            </span>
+          </button>
+        </div>
+      </article>
+
+      <article class="todo-panel dash-card">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">TASKS</p>
+            <h2>{{ isAdminWorkspace ? '运行关注' : '待办任务' }}</h2>
+          </div>
+          <button type="button" @click="router.push(isAdminWorkspace ? '/admin/logs' : '/teacher/review')">
+            {{ isAdminWorkspace ? '系统日志' : '阅卷中心' }}
+            <el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <div class="review-summary">
+          <button
+            v-for="item in reviewStats"
+            :key="item.label"
+            type="button"
+            @click="router.push(item.path)"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <div v-if="workRows.length" class="todo-list">
+          <button v-for="row in workRows" :key="row.id" type="button" class="todo-row" @click="router.push(row.path)">
+            <span class="mini-avatar">{{ row.avatar }}</span>
+            <strong>{{ row.actor }}</strong>
+            <span>{{ row.title }}</span>
+            <small>{{ row.source }}</small>
+            <time>{{ row.date }}</time>
+          </button>
+        </div>
+        <el-empty v-else :description="isAdminWorkspace ? '暂无运行记录' : '暂无待阅记录'" :image-size="56" />
+        <el-button class="review-action" type="primary" @click="router.push(isAdminWorkspace ? '/admin/logs' : '/teacher/review')">
+          {{ isAdminWorkspace ? '查看系统日志' : '开始批阅' }}
+        </el-button>
+      </article>
+
+      <article class="feedback-panel dash-card">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">ACTIVITY</p>
+            <h2>{{ isAdminWorkspace ? '系统概览' : '作业反馈详情' }}</h2>
+          </div>
+          <button type="button" @click="router.push(isAdminWorkspace ? '/admin/users' : '/teacher/stage-evaluations')">
+            更多
+            <el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <div v-if="activityRows.length" class="feedback-list">
+          <button
+            v-for="row in activityRows"
+            :key="row.id"
+            type="button"
+            class="feedback-row"
+            @click="router.push(row.path)"
+          >
+            <span class="mini-avatar photo">{{ row.avatar }}</span>
+            <span class="feedback-copy">
+              <strong>{{ row.student }} · {{ cleanFeedbackTitle(row.title) }}</strong>
+              <span v-if="feedbackScoreTags(row.title).length" class="ai-score-tags">
+                <span v-for="tag in feedbackScoreTags(row.title)" :key="tag" class="ai-score-tag">{{ tag }}</span>
+              </span>
+              <small>{{ row.meta }} · {{ row.date }}</small>
+            </span>
+            <el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <el-empty v-else :description="isAdminWorkspace ? '暂无系统概览数据' : '暂无阶段反馈记录'" :image-size="56" />
+      </article>
+    </section>
+
+    <aside class="date-widget" aria-label="日期">
+      <strong>今日</strong>
+      <time>{{ todayLabel }}</time>
+    </aside>
+  </div>
+
+  <div v-else class="dashboard-root">
     <section class="workspace-hero" aria-labelledby="dashboard-title">
       <div>
-        <p class="eyebrow">{{ roleName }}工作台</p>
-        <h1 id="dashboard-title">{{ auth.displayName || '欢迎回来' }}</h1>
-        <p>{{ heroCopy }}</p>
+        <p class="eyebrow">Student Workspace</p>
+        <h1 id="dashboard-title">{{ displayName }}</h1>
+        <p>集中查看常用学习功能入口，快速进入作业、练习、统计和学习路径。</p>
       </div>
-      <el-button type="primary" :icon="ArrowRight" @click="router.push(shortcuts[0]?.path || '/dashboard')">
+      <el-button type="primary" :icon="ArrowRight" @click="router.push(shortcutItems[0]?.path || '/dashboard')">
         进入常用功能
       </el-button>
     </section>
@@ -100,10 +674,713 @@ const groupedShortcuts = computed(() => {
 </template>
 
 <style scoped>
+.backend-dashboard {
+  position: relative;
+  display: grid;
+  gap: 18px;
+  min-height: calc(100vh - 120px);
+  padding: 8px 8px 72px;
+  color: #1e293b;
+}
+
+.dashboard-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+  min-height: 150px;
+  border: 1px solid rgba(226, 232, 240, 0.78);
+  border-radius: 24px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(255, 255, 255, 0.46), transparent 28%),
+    linear-gradient(105deg, rgba(20, 184, 166, 0.92), rgba(153, 229, 219, 0.66) 34%, rgba(255, 255, 255, 0.9) 58%, rgba(45, 212, 191, 0.34));
+  background-size: 180% 180%, 220% 220%;
+  box-shadow: 0 24px 60px rgba(15, 118, 110, 0.15);
+  overflow: hidden;
+  animation: heroGradientFlow 18s ease-in-out infinite alternate;
+}
+
+.dashboard-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.12) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+  background-size: 34px 34px;
+  opacity: 0.22;
+  transform: translate3d(0, 0, 0);
+  animation: dataTextureDrift 24s linear infinite;
+  pointer-events: none;
+}
+
+.dashboard-hero::after {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  background:
+    radial-gradient(circle at 18% 28%, rgba(255, 255, 255, 0.36) 0 2px, transparent 3px),
+    radial-gradient(circle at 74% 36%, rgba(20, 184, 166, 0.2) 0 2px, transparent 3px),
+    radial-gradient(circle at 88% 72%, rgba(255, 255, 255, 0.26) 0 1px, transparent 2px);
+  background-size: 260px 160px, 300px 180px, 220px 140px;
+  opacity: 0.5;
+  animation: particleFloat 16s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+.dashboard-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-hero .hero-action {
+  border: 0;
+  --el-button-bg-color: rgba(255, 255, 255, 0.34);
+  --el-button-border-color: transparent;
+  --el-button-text-color: #0f4f49;
+  --el-button-hover-bg-color: rgba(255, 255, 255, 0.44);
+  --el-button-hover-border-color: transparent;
+  --el-button-hover-text-color: #0b3b36;
+  color: #0f4f49;
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: none;
+  backdrop-filter: blur(10px);
+  font-weight: 700;
+  transition: color 0.25s ease, background-color 0.25s ease, transform 0.25s ease;
+}
+
+.dashboard-hero .hero-action:hover,
+.dashboard-hero .hero-action:focus {
+  color: #0b3b36;
+  background: rgba(255, 255, 255, 0.44);
+  transform: translateY(-1px);
+}
+
+.dashboard-hero .hero-action :deep(span) {
+  color: currentColor;
+}
+
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-radius: 22px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(10px);
+}
+
+.profile-avatar,
+.mini-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  font-weight: 800;
+}
+
+.profile-avatar {
+  width: 62px;
+  height: 62px;
+  color: #0f766e;
+  border: 4px solid rgba(255, 255, 255, 0.66);
+  background: linear-gradient(180deg, #dff8f3, #ffffff);
+  font-size: 24px;
+}
+
+.eyebrow {
+  margin: 0 0 7px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.profile-card .eyebrow {
+  color: rgba(15, 23, 42, 0.58);
+}
+
+.profile-card h1,
+.hero-copy h2 {
+  margin: 0;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.profile-card h1 {
+  font-size: 24px;
+}
+
+.profile-card span:not(.profile-avatar) {
+  display: inline-block;
+  margin-top: 8px;
+  border-radius: 999px;
+  padding: 4px 14px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.hero-copy h2 {
+  font-size: 28px;
+}
+
+.hero-copy p {
+  max-width: 760px;
+  margin: 8px 0 0;
+  color: #475569;
+  line-height: 1.7;
+}
+
+.dashboard-error {
+  margin: 0;
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.dash-card,
+.metric-card {
+  border: 1px solid rgba(226, 232, 240, 0.78);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
+}
+
+.dash-card {
+  padding: 18px;
+}
+
+.insight-panel,
+.todo-panel {
+  grid-column: span 6;
+}
+
+.insight-panel,
+.todo-panel {
+  min-height: 420px;
+}
+
+.insight-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.todo-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.feedback-panel {
+  grid-column: span 6;
+  position: relative;
+  overflow: hidden;
+}
+
+.feedback-panel::before {
+  content: '';
+  position: absolute;
+  inset: 14px auto 14px 0;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(20, 184, 166, 0.18), rgba(20, 184, 166, 0.78), rgba(14, 165, 233, 0.18));
+  box-shadow: 0 0 16px rgba(20, 184, 166, 0.2);
+  animation: aiBreath 2.8s ease-in-out infinite;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.panel-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.insight-content {
+  display: grid;
+  grid-template-columns: 144px minmax(0, 1fr);
+  gap: 16px;
+  flex: 1;
+  min-height: 236px;
+}
+
+.student-stat-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.student-stat-card {
+  position: relative;
+  min-height: 92px;
+  border: 0;
+  border-radius: 16px;
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.student-stat-card.mint {
+  background: #ecfdf5;
+}
+
+.student-stat-card.warm {
+  background: #fff7ed;
+}
+
+.student-stat-card.blue {
+  background: #eff6ff;
+}
+
+.student-stat-card span,
+.student-stat-card strong,
+.student-stat-card em {
+  display: block;
+}
+
+.student-stat-card span {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.student-stat-card strong {
+  margin-top: 8px;
+  color: #0f172a;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.student-stat-card em {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.trend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.trend-head strong {
+  color: #334155;
+  font-size: 13px;
+}
+
+.trend-head span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.trend-head i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #0f766e;
+}
+
+.trend-block {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.trend-chart {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+}
+
+.insight-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #edf2f7;
+}
+
+.review-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.review-summary button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  min-height: 104px;
+  border: 0;
+  border-radius: 16px;
+  padding: 18px 16px;
+  color: #0f172a;
+  background: linear-gradient(135deg, #fff7ed, #fef3c7);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.3s ease-in-out;
+}
+
+.review-summary button:nth-child(2) {
+  background: linear-gradient(135deg, #eff6ff, #e0f2fe);
+}
+
+.review-summary button:hover,
+.review-summary button:focus-visible {
+  transform: translateY(-4px);
+  box-shadow: 0 18px 34px rgba(15, 118, 110, 0.1);
+  outline: none;
+}
+
+.review-summary button:hover .el-icon,
+.review-summary button:focus-visible .el-icon {
+  color: #0f766e;
+  transform: scale(1.1);
+}
+
+.review-summary span,
+.review-summary strong {
+  display: block;
+}
+
+.review-summary span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.review-summary strong {
+  margin-top: 6px;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.todo-list,
+.feedback-list {
+  display: grid;
+  gap: 8px;
+}
+
+.todo-row,
+.feedback-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.todo-row {
+  display: grid;
+  grid-template-columns: 30px 78px minmax(0, 1fr) 92px 80px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.mini-avatar {
+  width: 28px;
+  height: 28px;
+  color: #0f766e;
+  background: #dff8f3;
+  font-size: 12px;
+}
+
+.mini-avatar.photo {
+  color: #0f172a;
+  background: linear-gradient(135deg, #fef3c7, #bae6fd);
+}
+
+.todo-row strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.todo-row span:nth-child(3),
+.feedback-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-row time {
+  color: #64748b;
+  text-align: right;
+}
+
+.review-action {
+  width: 100%;
+  margin-top: auto;
+  margin-bottom: 2px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #155e75, #0f766e);
+  border: 0;
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.22);
+}
+
+.metric-card {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  min-height: 88px;
+  gap: 10px;
+  padding: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.3s ease-in-out;
+}
+
+.metric-card:hover,
+.metric-card:focus-visible,
+.feedback-row:hover,
+.feedback-row:focus-visible,
+.todo-row:hover,
+.todo-row:focus-visible {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 38px rgba(15, 118, 110, 0.12);
+  outline: none;
+}
+
+.metric-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: #0f766e;
+  background: #dff8f3;
+  transition: transform 0.3s ease-in-out, color 0.3s ease-in-out, background-color 0.3s ease-in-out;
+}
+
+.metric-card:hover .metric-icon,
+.metric-card:focus-visible .metric-icon {
+  color: #14b8a6;
+  background: #ccfbf1;
+  transform: scale(1.1);
+}
+
+.metric-card.blue .metric-icon {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.metric-card.gold .metric-icon {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.metric-card.teal .metric-icon {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.metric-copy strong,
+.metric-copy small,
+.metric-copy em,
+.feedback-copy strong,
+.feedback-copy small {
+  display: block;
+}
+
+.metric-copy strong {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.metric-copy small {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.metric-copy em {
+  margin-top: 10px;
+  color: #0f172a;
+  font-style: normal;
+}
+
+.metric-copy b {
+  margin-right: 4px;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.feedback-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  min-height: 50px;
+  border-bottom: 1px solid #edf2f7;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.feedback-row:last-child {
+  border-bottom: 0;
+}
+
+.feedback-copy strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.feedback-copy small {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.ai-score-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ai-score-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #0f766e;
+  background: #f0fdfa;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: 0 8px 18px rgba(20, 184, 166, 0.08);
+}
+
+@keyframes heroGradientFlow {
+  0% {
+    background-position: 0% 50%, 0% 50%;
+  }
+
+  100% {
+    background-position: 100% 50%, 100% 50%;
+  }
+}
+
+@keyframes dataTextureDrift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  100% {
+    transform: translate3d(34px, 34px, 0);
+  }
+}
+
+@keyframes particleFloat {
+  0% {
+    transform: translate3d(-8px, 4px, 0);
+  }
+
+  100% {
+    transform: translate3d(12px, -8px, 0);
+  }
+}
+
+@keyframes aiBreath {
+  0%,
+  100% {
+    opacity: 0.52;
+    box-shadow: 0 0 12px rgba(20, 184, 166, 0.14);
+  }
+
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 26px rgba(20, 184, 166, 0.36);
+  }
+}
+
+.date-widget {
+  position: fixed;
+  right: 28px;
+  bottom: 24px;
+  z-index: 4;
+  display: grid;
+  gap: 2px;
+  min-width: 128px;
+  border: 1px solid rgba(226, 232, 240, 0.78);
+  border-radius: 16px;
+  padding: 12px 14px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(10px);
+}
+
+.date-widget strong {
+  font-size: 15px;
+}
+
+.date-widget time {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .dashboard-root {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
+}
+
+.workspace-hero,
+.shortcut-section {
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.05);
 }
 
 .workspace-hero {
@@ -111,41 +1388,26 @@ const groupedShortcuts = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  min-height: 156px;
-  padding: 26px 28px;
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-  background:
-    linear-gradient(120deg, rgba(79, 143, 123, 0.12), transparent 52%),
-    linear-gradient(90deg, #ffffff, #f7fbf9);
-  box-shadow: 0 12px 28px rgba(53, 83, 73, 0.08);
-}
-
-.eyebrow {
-  margin: 0 0 8px;
-  color: var(--app-primary-dark);
-  font-size: 13px;
-  font-weight: 800;
+  min-height: 176px;
+  padding: 30px;
 }
 
 .workspace-hero h1 {
   margin: 0;
-  font-size: 30px;
-  letter-spacing: 0;
+  color: #172033;
+  font-size: 32px;
+  line-height: 1.2;
 }
 
 .workspace-hero p:last-child {
-  max-width: 680px;
+  max-width: 760px;
   margin: 10px 0 0;
-  color: var(--app-text-soft);
+  color: #667085;
   line-height: 1.7;
 }
 
 .shortcut-section {
-  padding: 20px;
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
+  padding: 22px;
 }
 
 .section-heading {
@@ -153,39 +1415,40 @@ const groupedShortcuts = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .section-heading h2 {
   margin: 0;
+  color: #172033;
   font-size: 20px;
 }
 
 .section-heading span {
-  color: var(--app-text-soft);
+  color: #667085;
   font-size: 13px;
 }
 
 .shortcut-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
 }
 
 .shortcut-item {
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr) 24px;
   align-items: center;
-  gap: 12px;
-  min-height: 86px;
+  gap: 13px;
+  min-height: 92px;
   width: 100%;
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-  background: var(--app-surface-soft);
-  padding: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 16px;
   cursor: pointer;
   text-align: left;
-  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .shortcut-icon {
@@ -193,9 +1456,9 @@ const groupedShortcuts = computed(() => {
   place-items: center;
   width: 46px;
   height: 46px;
-  border-radius: 8px;
-  color: var(--app-primary-dark);
-  background: var(--app-primary-soft);
+  border-radius: 14px;
+  color: #0f766e;
+  background: #e6f7f4;
 }
 
 .shortcut-copy strong,
@@ -204,30 +1467,79 @@ const groupedShortcuts = computed(() => {
 }
 
 .shortcut-copy strong {
-  color: var(--app-text);
+  color: #172033;
   font-size: 16px;
 }
 
 .shortcut-copy small {
-  margin-top: 4px;
-  color: var(--app-text-soft);
+  margin-top: 5px;
+  color: #667085;
   font-size: 13px;
   line-height: 1.5;
 }
 
 .shortcut-arrow {
-  color: var(--app-text-soft);
+  color: #98a2b3;
 }
 
 .shortcut-item:hover,
 .shortcut-item:focus-visible {
-  transform: translateY(-1px);
-  background: #f3faf6;
-  border-color: var(--app-border-strong);
+  transform: translateY(-2px);
+  border-color: rgba(20, 184, 166, 0.45);
+  background: #ffffff;
+  box-shadow: 0 16px 30px rgba(15, 118, 110, 0.08);
   outline: none;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
+  .dashboard-hero {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .insight-panel,
+  .todo-panel,
+  .feedback-panel {
+    grid-column: span 12;
+  }
+
+  .insight-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .backend-dashboard {
+    padding: 0 0 90px;
+  }
+
+  .insight-content {
+    grid-template-columns: 1fr;
+  }
+
+  .student-stat-stack,
+  .review-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trend-chart {
+    min-height: 240px;
+  }
+
+  .todo-row {
+    grid-template-columns: 30px 64px minmax(0, 1fr);
+  }
+
+  .todo-row small,
+  .todo-row time {
+    display: none;
+  }
+
+  .date-widget {
+    right: 12px;
+    bottom: 12px;
+  }
+
   .workspace-hero {
     align-items: flex-start;
     flex-direction: column;
@@ -235,12 +1547,25 @@ const groupedShortcuts = computed(() => {
 }
 
 @media (max-width: 640px) {
+  .dashboard-hero,
+  .dash-card,
   .workspace-hero,
   .shortcut-section {
     padding: 16px;
   }
 
-  .workspace-hero h1 {
+  .profile-card {
+    width: 100%;
+  }
+
+  .student-stat-stack,
+  .review-summary,
+  .insight-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-hero h1,
+  .hero-copy h2 {
     font-size: 24px;
   }
 }

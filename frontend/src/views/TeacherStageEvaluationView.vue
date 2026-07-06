@@ -85,18 +85,19 @@ onMounted(loadRows)
     <section class="surface-panel">
       <div class="section-heading">
         <div>
+          <p class="eyebrow">Student Profile</p>
           <h2>学生阶段画像</h2>
-          <p>用于筛出需要重点关注的学生和高频薄弱方向。</p>
+          <span>筛选需要重点关注的学生和高频薄弱方向。</span>
         </div>
       </div>
       <el-table :data="rows" border>
         <el-table-column prop="studentName" label="学生" min-width="130" />
-        <el-table-column prop="stageName" label="阶段" width="100" />
-        <el-table-column prop="overallLevel" label="综合等级" width="110" />
-        <el-table-column prop="abilityScore" label="能力值" width="90" />
-        <el-table-column prop="completedAttemptCount" label="作答次数" width="100" />
-        <el-table-column prop="averageScore" label="平均分" width="90" />
-        <el-table-column label="掌握度" width="150">
+        <el-table-column prop="stageName" label="阶段" width="110" />
+        <el-table-column prop="overallLevel" label="综合等级" width="120" />
+        <el-table-column prop="abilityScore" label="能力值" width="100" />
+        <el-table-column prop="completedAttemptCount" label="作答次数" width="110" />
+        <el-table-column prop="averageScore" label="平均分" width="100" />
+        <el-table-column label="掌握度" width="170">
           <template #default="{ row }">
             <el-progress :percentage="Math.round(Number(row.masteryAverage || 0) * 100)" />
           </template>
@@ -108,15 +109,20 @@ onMounted(loadRows)
     <section class="surface-panel">
       <div class="section-heading">
         <div>
+          <p class="eyebrow">Dimensions</p>
           <h2>评价维度明细</h2>
-          <p>展开学生查看各维度得分，定位知识、能力与行为层面的短板。</p>
+          <span>展开学生查看各维度得分，定位知识、能力与行为层面的短板。</span>
         </div>
       </div>
       <el-collapse accordion>
-        <el-collapse-item v-for="row in rows" :key="row.studentId" :title="`${row.studentName} - ${row.stageName} / 掌握度 ${percent(row.masteryAverage)}`">
+        <el-collapse-item
+          v-for="row in rows"
+          :key="row.studentId"
+          :title="`${row.studentName} - ${row.stageName} / 掌握度 ${percent(row.masteryAverage)}`"
+        >
           <el-table :data="row.dimensions || []" border>
-            <el-table-column prop="name" label="维度" width="140" />
-            <el-table-column label="得分" width="200">
+            <el-table-column prop="name" label="维度" width="160" />
+            <el-table-column label="得分" width="220">
               <template #default="{ row: dim }">
                 <el-progress :percentage="dim.score || 0" />
               </template>
@@ -139,10 +145,10 @@ onMounted(loadRows)
 .stage-hero,
 .surface-panel,
 .stat-card {
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 10px 26px rgba(53, 83, 73, 0.06);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.07);
 }
 
 .stage-hero {
@@ -152,31 +158,38 @@ onMounted(loadRows)
   gap: 24px;
   padding: 24px;
   background:
-    linear-gradient(120deg, rgba(79, 143, 123, 0.12), transparent 55%),
-    #ffffff;
+    radial-gradient(circle at 10% 20%, rgba(20, 184, 166, 0.2), transparent 28%),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.98), rgba(240, 253, 250, 0.9));
 }
 
 .eyebrow {
   margin: 0 0 8px;
-  color: var(--app-primary-dark);
-  font-size: 13px;
+  color: #0f766e;
+  font-size: 12px;
   font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .stage-hero h1,
 .section-heading h2 {
   margin: 0;
+  color: #0f172a;
   letter-spacing: 0;
 }
 
 .stage-hero h1 {
-  font-size: 28px;
+  font-size: 30px;
+}
+
+.stage-hero p:last-child {
+  max-width: 760px;
 }
 
 .stage-hero p,
-.section-heading p {
+.section-heading span {
   margin: 8px 0 0;
-  color: var(--app-text-soft);
+  color: #64748b;
   line-height: 1.6;
 }
 
@@ -199,26 +212,26 @@ onMounted(loadRows)
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .stat-card {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 48px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  min-height: 86px;
-  padding: 14px;
+  gap: 14px;
+  min-height: 94px;
+  padding: 16px;
 }
 
 .stat-icon {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 8px;
-  color: var(--app-primary-dark);
-  background: var(--app-primary-soft);
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  color: #0f766e;
+  background: #dff8f3;
 }
 
 .stat-card span,
@@ -227,18 +240,20 @@ onMounted(loadRows)
 }
 
 .stat-card div span {
-  color: var(--app-text-soft);
+  color: #64748b;
   font-size: 13px;
+  font-weight: 700;
 }
 
 .stat-card strong {
   margin-top: 4px;
-  color: var(--app-text);
-  font-size: 22px;
+  color: #0f172a;
+  font-size: 26px;
+  line-height: 1;
 }
 
 .surface-panel {
-  padding: 18px;
+  padding: 20px;
 }
 
 .section-heading {

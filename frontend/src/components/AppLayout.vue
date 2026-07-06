@@ -157,7 +157,7 @@ async function handleLogout() {
   <div v-if="isLearningPathReport" class="report-layout">
     <RouterView />
   </div>
-  <el-container v-else class="layout-root">
+  <el-container v-else :class="['layout-root', { 'backend-shell': !isStudent }]">
     <el-aside width="240px" class="layout-aside">
       <div class="brand">
         <div class="brand-mark">题库</div>
@@ -221,6 +221,22 @@ async function handleLogout() {
 .layout-root {
   min-height: 100vh;
   background: var(--app-bg);
+}
+
+.backend-shell {
+  --backend-bg: #f4f7fb;
+  --backend-panel: #ffffff;
+  --backend-panel-soft: #f8fafc;
+  --backend-line: #e5eaf1;
+  --backend-text: #172033;
+  --backend-muted: #667085;
+  --backend-primary: #0f766e;
+  --backend-primary-strong: #0b5f59;
+  --backend-primary-soft: #e6f7f4;
+
+  background:
+    radial-gradient(circle at 18% 0%, rgba(20, 184, 166, 0.12), transparent 28%),
+    linear-gradient(180deg, #f7fbff 0%, var(--backend-bg) 260px);
 }
 
 .layout-aside {
@@ -386,6 +402,28 @@ async function handleLogout() {
   z-index: 3;
 }
 
+.backend-shell .layout-header {
+  min-height: 72px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.86);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04);
+}
+
+.backend-shell .layout-header::before {
+  height: 0;
+}
+
+.backend-shell .header-left h2 {
+  color: var(--backend-text);
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.backend-shell .header-left p,
+.backend-shell .welcome {
+  color: var(--backend-muted);
+}
+
 .layout-header::before {
   content: '';
   position: absolute;
@@ -425,6 +463,16 @@ async function handleLogout() {
     linear-gradient(180deg, rgba(233, 243, 239, 0.55), rgba(250, 252, 251, 0.85) 240px),
     var(--app-bg);
   padding: 18px;
+}
+
+.backend-shell .layout-main {
+  min-height: calc(100vh - 72px);
+  padding: 24px;
+  background:
+    linear-gradient(90deg, rgba(15, 118, 110, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(15, 118, 110, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(248, 252, 255, 0.92), rgba(244, 247, 251, 0.98));
+  background-size: 28px 28px, 28px 28px, auto;
 }
 
 @media (max-width: 900px) {
