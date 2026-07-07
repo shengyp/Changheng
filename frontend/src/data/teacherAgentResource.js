@@ -41,7 +41,7 @@ const demoStudent = {
     { code: 'project', name: '工程实践', score: 55, level: '待提升', description: '多文件组织、文件读写和模块拆分需要补强。' },
   ],
   suggestions: [
-    '先补齐指针与结构体的关联练习，再进入文件读写综合题。',
+    '先补齐指针与结构体数组的关联练习，再进入文件读写综合题。',
     '每次练习后提交调试记录，重点说明错误定位过程。',
     '建议采用小项目任务驱动，把知识点放进完整程序中复盘。',
   ],
@@ -68,7 +68,7 @@ const agents = {
     subtitle: '画像标准化',
     avatar: 'P',
     icon: Memo,
-    note: '读取学生画像，转换为标准 JSON 输入。',
+    note: '读取学生画像，把阶段评价、薄弱点和作答证据整理为标准输入。',
   },
   coordinator: {
     id: 'coordinator',
@@ -79,12 +79,12 @@ const agents = {
     image: agentImages.coordinator,
     imagePosition: '12% center',
     icon: Connection,
-    note: '把画像分发给知识、能力和行为分析智能体。',
+    note: '把画像证据分发给知识、能力、错因和资源生成智能体。',
   },
   knowledge: {
     id: 'knowledge',
     title: 'Knowledge Agent',
-    cnTitle: '知识定位智能体',
+    cnTitle: '知识掌握分析智能体',
     subtitle: '知识点与标签映射',
     avatar: 'K',
     image: agentImages.knowledge,
@@ -95,35 +95,35 @@ const agents = {
   ability: {
     id: 'ability',
     title: 'Ability Agent',
-    cnTitle: '能力分析智能体',
-    subtitle: '能力维度评估',
+    cnTitle: '能力维度评估智能体',
+    subtitle: '能力维度诊断',
     avatar: 'A',
     image: agentImages.ability,
     imagePosition: '50% center',
     icon: TrendCharts,
-    note: '分析维度得分，定位能力短板。',
+    note: '分析阶段评价中的能力得分，定位理解迁移、实践能力等短板。',
   },
   behavior: {
     id: 'behavior',
     title: 'Reflection Agent',
-    cnTitle: '资料生成智能体',
-    subtitle: '讲义与错因复盘',
+    cnTitle: '错因模式分析智能体',
+    subtitle: '错题与学习轨迹复盘',
     avatar: 'R',
     image: agentImages.behavior,
     imagePosition: '50% center',
     icon: Operation,
-    note: '生成知识点讲义、错因复盘和学习路径资料。',
+    note: '结合错题、作答轨迹和小C对话，整理需要复盘的错误模式。',
   },
   resource: {
     id: 'resource',
     title: 'Resource Agent',
-    cnTitle: '讲解生成智能体',
-    subtitle: '知识讲解视频',
+    cnTitle: '资源生成智能体',
+    subtitle: '讲解资源与视频',
     avatar: 'M',
     image: agentImages.resource,
     imagePosition: '50% center',
     icon: Files,
-    note: '生成或匹配具体可播放的知识讲解视频。',
+    note: '生成或匹配可直接给学生使用的知识讲解、讲义和视频资源。',
   },
   practice: {
     id: 'practice',
@@ -139,42 +139,59 @@ const agents = {
   report: {
     id: 'report',
     title: 'Reporting Agent',
-    cnTitle: '发布编排智能体',
-    subtitle: '保存与发布准备',
+    cnTitle: '会诊决策智能体',
+    subtitle: '共识汇总与发布准备',
     avatar: 'G',
     image: agentImages.report,
     imagePosition: '50% center',
     icon: DocumentChecked,
-    note: '汇总审核结果，标记资源库保存、草稿题和发布目标。',
+    note: '汇总会诊意见、资源草案、审核结果和教师可采纳建议。',
   },
   qualityReview: {
     id: 'qualityReview',
     title: 'Quality Review Agent',
-    cnTitle: '质量审核智能体',
-    subtitle: '适用性与可用性审核',
+    cnTitle: '资源质量审核智能体',
+    subtitle: '可用性与教学价值审核',
     avatar: 'Q',
     icon: DocumentChecked,
-    note: '审核资源是否适合当前学生或班级并可直接使用。',
+    note: '审核资源是否完整、可用、难度适配，并能直接服务学生薄弱点。',
   },
   consistencyReview: {
     id: 'consistencyReview',
     title: 'Consistency Review Agent',
     cnTitle: '主题一致性审核智能体',
-    subtitle: '一致性审核',
+    subtitle: '画像与资源一致性审核',
     avatar: 'T',
     icon: Search,
-    note: '检查资源是否围绕学生画像、薄弱点和课程主题。',
+    note: '检查资源是否围绕学生画像、薄弱点和课程目标展开。',
   },
 }
 
 const agentInfoCards = ['preprocess', 'coordinator', 'knowledge', 'ability', 'behavior', 'resource', 'practice', 'report', 'qualityReview', 'consistencyReview']
-const editableAgentIds = ['report', 'qualityReview', 'consistencyReview']
+const editableAgentIds = ['preprocess', 'coordinator', 'knowledge', 'ability', 'behavior', 'resource', 'practice', 'report', 'qualityReview', 'consistencyReview']
 const agentProviderFieldMap = {
-  report: 'generator',
-  qualityReview: 'qualityReviewer',
-  consistencyReview: 'consistencyReviewer',
+  preprocess: 'preprocess',
+  coordinator: 'coordinator',
+  knowledge: 'knowledge',
+  ability: 'ability',
+  behavior: 'behavior',
+  resource: 'resource',
+  practice: 'practice',
+  report: 'report',
+  qualityReview: 'qualityReview',
+  consistencyReview: 'consistencyReview',
 }
 const backendAgentLabels = {
+  preprocess: '预处理智能体',
+  coordinator: '协调智能体',
+  knowledge: '知识掌握分析智能体',
+  ability: '能力维度评估智能体',
+  behavior: '错因模式分析智能体',
+  resource: '资源生成智能体',
+  practice: '练习生成智能体',
+  report: '会诊决策智能体',
+  qualityReview: '资源质量审核智能体',
+  consistencyReview: '主题一致性审核智能体',
   generator: '资源生成智能体',
   qualityReviewer: '资源质量审核智能体',
   consistencyReviewer: '主题一致性审核智能体',
@@ -225,16 +242,13 @@ const resourceTypeLabels = {
   animated_explainer: '知识讲解视频',
   interactive_quiz: '互动测验',
   learning_path: '学习路径',
-}
-
-const deprecatedResourceTypes = new Set(['personalized_video'])
-Object.assign(resourceTypeLabels, {
   knowledge_video: '知识讲解视频',
   remedial_exercise: '补救练习',
   knowledge_handout: '知识点讲义',
   error_reflection: '错因复盘',
-  learning_path: '学习路径',
-})
+}
+
+const deprecatedResourceTypes = new Set(['personalized_video'])
 const videoResourceTypes = new Set(['knowledge_video', 'animated_explainer'])
 const exerciseResourceTypes = new Set(['remedial_exercise', 'interactive_quiz', 'variant_practice'])
 const multimodalResourceTypes = new Set(['knowledge_video', 'animated_explainer', 'remedial_exercise', 'interactive_quiz'])

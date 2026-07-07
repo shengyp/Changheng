@@ -52,9 +52,32 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
     private static final String AGENT_GENERATOR = "generator";
     private static final String AGENT_QUALITY_REVIEWER = "qualityReviewer";
     private static final String AGENT_CONSISTENCY_REVIEWER = "consistencyReviewer";
+    private static final List<String> DISCUSSION_AGENT_SEQUENCE = List.of(
+            "preprocess",
+            "coordinator",
+            "knowledge",
+            "ability",
+            "behavior",
+            "resource",
+            "practice",
+            "report",
+            "qualityReview",
+            "consistencyReview"
+    );
     private static final int GENERATOR_WAIT_SECONDS = 75;
     private static final int REVIEW_WAIT_SECONDS = 45;
+    private static final int DISCUSSION_WAIT_SECONDS = 45;
     private static final Set<String> EDITABLE_AGENT_PROVIDER_KEYS = Set.of(
+            "preprocess",
+            "coordinator",
+            "knowledge",
+            "ability",
+            "behavior",
+            "resource",
+            "practice",
+            "report",
+            "qualityReview",
+            "consistencyReview",
             AGENT_GENERATOR,
             AGENT_QUALITY_REVIEWER,
             AGENT_CONSISTENCY_REVIEWER
@@ -79,6 +102,37 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
         } catch (Exception ex) {
             throw BizException.of(ErrorCode.LLM_ERROR, "教师端智能体资源生成失败：" + safeErrorMessage(ex));
         }
+    }
+
+    @Override
+    public TeacherAgentResourceGenerateVO.AgentDiscussionMessage discuss(Long teacherId, boolean admin, TeacherAgentResourceGenerateRequest request) {
+        if (request == null || request.getStudentId() == null) {
+            throw BizException.of(ErrorCode.PARAM_ERROR, "学生 ID 不能为空");
+        }
+        String agentId = normalizeProviderKey(request.getAgentId());
+        if (!StringUtils.hasText(agentId) || !DISCUSSION_AGENT_SEQUENCE.contains(agentId)) {
+            throw BizException.of(ErrorCode.PARAM_ERROR, "不支持的会诊智能体：" + safeText(agentId, "空"));
+        }
+        StageLearningEvaluationVO profile = loadProfile(teacherId, admin, request);
+        List<String> resourceTypes = normalizeResourceTypes(request.getResourceTypes());
+        String defaultProviderKey = normalizeProviderKey(request.getProviderKey());
+        Map<String, String> agentProviderKeys = normalizeAgentProviderKeys(request.getAgentProviderKeys());
+        Map<String, Object> evidencePack = buildLearningEvidencePack(profile, request, resourceTypes);
+        String providerKey = providerFor(defaultProviderKey, agentProviderKeys, agentId);
+        return runSingleAgentDiscussion(profile, request, resourceTypes, evidencePack,
+                discussionMessagesFromRequest(request), agentId, providerKey, teacherId);
+    }
+
+    @Override
+    public List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> discussMeeting(Long teacherId, boolean admin, TeacherAgentResourceGenerateRequest request) {
+        if (request == null || request.getStudentId() == null) {
+            throw BizException.of(ErrorCode.PARAM_ERROR, "学生 ID 不能为空");
+        }
+        StageLearningEvaluationVO profile = loadProfile(teacherId, admin, request);
+        List<String> resourceTypes = normalizeResourceTypes(request.getResourceTypes());
+        Map<String, Object> evidencePack = buildLearningEvidencePack(profile, request, resourceTypes);
+        return runMeetingConversation(profile, request, resourceTypes, evidencePack,
+                discussionMessagesFromRequest(request), teacherId);
     }
 
     @Override
@@ -151,6 +205,17 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
                 "已读取学生阶段画像，薄弱点 " + profile.getWeakKnowledgePoints().size() + " 个。", null, null));
         vo.getAgentTrace().add(trace("coordinator", "协调智能体", "success",
                 "已按知识补强、错因复盘、能力任务、变式练习和学习路径分配生成任务。", null, null));
+        Map<String, Object> evidencePack = buildLearningEvidencePack(profile, request, resourceTypes);
+        try {
+            vo.getDiscussionMessages().addAll(runAgentDiscussion(profile, request, resourceTypes, evidencePack, teacherId));
+        } catch (Exception ex) {
+            TeacherAgentResourceGenerateVO.DecisionSummary fallbackSummary = new TeacherAgentResourceGenerateVO.DecisionSummary();
+            fallbackSummary.setStatus("fallback");
+            fallbackSummary.setHeadline("会诊摘要暂不可用");
+            fallbackSummary.setCurrentProblem("系统已保留学生画像和资源生成结果，请教师直接查看资源草案与审核报告。");
+            fallbackSummary.setTeacherAction("先查看资源生成结果，必要时结合阶段评价进行人工复核。");
+            vo.setDecisionSummary(fallbackSummary);
+        }
         ensureTaskActive(task);
 
         String generatorProvider = providerFor(defaultProviderKey, agentProviderKeys, AGENT_GENERATOR);
@@ -193,6 +258,9 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
 
         mergeReviews(resources, qualityExecution.reviews, consistencyExecution.reviews, generatorCall, qualityExecution.call, consistencyExecution.call);
         vo.getResources().addAll(resources);
+        if (vo.getDecisionSummary() == null || "fallback".equals(vo.getDecisionSummary().getStatus())) {
+            vo.setDecisionSummary(buildDecisionSummary(profile, request, resourceTypes, resources, vo.getDiscussionMessages()));
+        }
         vo.getAgentTrace().add(trace("report", "报告汇总智能体", "success",
                 "已汇总资源内容、个性化依据、审核报告和模型来源。", null, null));
         return vo;
@@ -315,6 +383,14 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
 
     private String providerFor(String defaultProviderKey, Map<String, String> agentProviderKeys, String agentId) {
         String providerKey = agentProviderKeys.get(agentId);
+        if (!StringUtils.hasText(providerKey)) {
+            providerKey = switch (agentId) {
+                case AGENT_GENERATOR -> firstNonBlank(agentProviderKeys.get("report"), agentProviderKeys.get("resource"));
+                case AGENT_QUALITY_REVIEWER -> agentProviderKeys.get("qualityReview");
+                case AGENT_CONSISTENCY_REVIEWER -> agentProviderKeys.get("consistencyReview");
+                default -> providerKey;
+            };
+        }
         return StringUtils.hasText(providerKey) ? providerKey : defaultProviderKey;
     }
 
@@ -1056,6 +1132,606 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
                 .distinct()
                 .limit(3)
                 .toList();
+    }
+
+    private Map<String, Object> buildLearningEvidencePack(StageLearningEvaluationVO profile,
+                                                          TeacherAgentResourceGenerateRequest request,
+                                                          List<String> resourceTypes) {
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("studentName", safeText(profile.getStudentName(), "该学生"));
+        evidence.put("stageName", safeText(profile.getStageName(), "当前阶段"));
+        evidence.put("abilityScore", profile.getAbilityScore());
+        evidence.put("masteryAverage", profile.getMasteryAverage());
+        evidence.put("completedAttemptCount", profile.getCompletedAttemptCount());
+        evidence.put("averageScore", profile.getAverageScore());
+        evidence.put("weakKnowledgePoints", weakPointNames(profile));
+        evidence.put("weakDimensions", weakDimensionNames(profile));
+        evidence.put("profileSummary", safeText(profile.getSummary(), "阶段画像已生成，需结合薄弱点和能力维度安排补强。"));
+        evidence.put("suggestions", profile.getSuggestions() == null ? List.of() : profile.getSuggestions().stream().filter(StringUtils::hasText).limit(4).toList());
+        evidence.put("resourceTypes", resourceTypes.stream().map(this::learningResourceTypeLabel).toList());
+        evidence.put("teacherRequirement", safeText(request == null ? null : request.getTeacherRequirement(), "无补充要求"));
+        return evidence;
+    }
+
+    private String buildAgentDiscussionPrompt(Map<String, Object> evidencePack) {
+        return "学习诊断会诊证据：" + toJson(evidencePack);
+    }
+
+    private List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> runAgentDiscussion(StageLearningEvaluationVO profile,
+                                                                                          TeacherAgentResourceGenerateRequest request,
+                                                                                          List<String> resourceTypes,
+                                                                                          Map<String, Object> evidencePack,
+                                                                                          Long teacherId) {
+        if (DISCUSSION_WAIT_SECONDS > 0) {
+            return runLlmAgentDiscussion(profile, request, resourceTypes, evidencePack, teacherId);
+        }
+        buildAgentDiscussionPrompt(evidencePack);
+        List<String> weakPoints = weakPointNames(profile);
+        List<String> weakDimensions = weakDimensionNames(profile);
+        List<String> resourceLabels = resourceTypes.stream().map(this::learningResourceTypeLabel).toList();
+        String weakPointText = weakPoints.isEmpty() ? "当前阶段核心知识点" : String.join("、", weakPoints);
+        String weakDimensionText = weakDimensions.isEmpty() ? "综合学习能力" : String.join("、", weakDimensions);
+        String resourceText = resourceLabels.isEmpty() ? "知识讲解、补救练习和学习路径" : String.join("、", resourceLabels);
+        String teacherRequirement = safeText(request == null ? null : request.getTeacherRequirement(), "按画像薄弱点自动生成");
+        List<String> commonEvidence = discussionEvidenceRefs(profile, resourceLabels);
+
+        List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> rows = new ArrayList<>();
+        rows.add(discussionMessage(1, "learning-diagnosis-agent", "学习情况总诊断智能体", "总体诊断",
+                "当前应优先围绕“" + weakDimensionText + "”定位学习瓶颈，先补齐低掌握知识点，再进入综合迁移训练。",
+                commonEvidence));
+        rows.add(discussionMessage(1, "knowledge-agent", "知识掌握分析智能体", "知识定位",
+                "建议把“" + weakPointText + "”作为本轮资源生成的核心主题，资源内容需要包含概念解释、例题拆解和即时检测。",
+                commonEvidence));
+        rows.add(discussionMessage(1, "error-pattern-agent", "错题模式分析智能体", "错因复盘",
+                "会诊判断该学生需要从错题中复盘变量状态、边界条件和输入输出依据，避免只记结论、不复盘过程。",
+                commonEvidence));
+        rows.add(discussionMessage(1, "ability-agent", "能力维度评估智能体", "能力评估",
+                "能力维度侧重“" + weakDimensionText + "”，建议练习设计从基础识别题过渡到变式题和小任务。",
+                commonEvidence));
+        rows.add(discussionMessage(1, "resource-agent", "个性化资源生成智能体", "资源建议",
+                "本轮建议生成“" + resourceText + "”，并结合教师补充要求：“" + teacherRequirement + "”。",
+                commonEvidence));
+        rows.add(discussionMessage(1, "review-agent", "质量审核智能体", "匹配审核",
+                "后续审核重点检查资源是否直接对应画像薄弱点、题目是否可作答、讲解是否能被学生直接使用。",
+                commonEvidence));
+        rows.add(discussionMessage(1, "decision-agent", "会诊决策智能体", "最终共识",
+                "会诊共识：先补“" + weakPointText + "”，用资源讲解建立概念，再用补救练习和错题复盘验证掌握情况。",
+                commonEvidence));
+        return rows;
+    }
+
+    private List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> runLlmAgentDiscussion(StageLearningEvaluationVO profile,
+                                                                                              TeacherAgentResourceGenerateRequest request,
+                                                                                              List<String> resourceTypes,
+                                                                                              Map<String, Object> evidencePack,
+                                                                                              Long teacherId) {
+        return runMeetingConversation(profile, request, resourceTypes, evidencePack, List.of(), teacherId);
+    }
+
+    private List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> runMeetingConversation(StageLearningEvaluationVO profile,
+                                                                                               TeacherAgentResourceGenerateRequest request,
+                                                                                               List<String> resourceTypes,
+                                                                                               Map<String, Object> evidencePack,
+                                                                                               List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> previousMessages,
+                                                                                               Long teacherId) {
+        List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> rows = new ArrayList<>();
+        if (previousMessages != null) {
+            previousMessages.stream()
+                    .filter(message -> message != null && !"running".equals(message.getStatus()))
+                    .forEach(rows::add);
+        }
+        String defaultProviderKey = normalizeProviderKey(request == null ? null : request.getProviderKey());
+        Map<String, String> agentProviderKeys = normalizeAgentProviderKeys(request == null ? null : request.getAgentProviderKeys());
+        int nextTurnIndex = rows.stream()
+                .map(TeacherAgentResourceGenerateVO.AgentDiscussionMessage::getTurnIndex)
+                .filter(index -> index != null)
+                .max(Integer::compareTo)
+                .orElse(0) + 1;
+        List<MeetingTurn> turns = meetingTurns();
+        String startAgentId = normalizeProviderKey(request == null ? null : request.getAgentId());
+        if (StringUtils.hasText(startAgentId)) {
+            int startIndex = -1;
+            for (int i = 0; i < turns.size(); i++) {
+                if (startAgentId.equals(turns.get(i).agentId)) {
+                    startIndex = i;
+                    break;
+                }
+            }
+            if (startIndex >= 0) {
+                turns = turns.subList(startIndex, turns.size());
+            }
+        }
+        for (MeetingTurn turn : turns) {
+            String providerKey = providerFor(defaultProviderKey, agentProviderKeys, turn.agentId);
+            rows.add(runMeetingTurn(profile, request, resourceTypes, evidencePack, rows, turn, providerKey, teacherId, nextTurnIndex++));
+        }
+        return rows;
+    }
+
+    private List<MeetingTurn> meetingTurns() {
+        return List.of(
+                new MeetingTurn(1, "preprocess", null, "先整理学生画像、作答、薄弱知识点和资源需求，给后续智能体提供统一证据包。"),
+                new MeetingTurn(1, "coordinator", "preprocess", "回应预处理证据，像会议主持人一样抛出本次会诊议题，说明大家要共同解决的学习问题。"),
+                new MeetingTurn(1, "knowledge", "coordinator", "回应主持人的议题，指出最需要补强的知识点，并说明资源内容应该先讲清什么。"),
+                new MeetingTurn(1, "ability", "knowledge", "回应知识诊断意见，补充这些知识薄弱会影响哪些能力维度，不能只重复知识点。"),
+                new MeetingTurn(1, "behavior", "ability", "回应能力评估意见，从错题模式和学习行为角度提出质疑或补充。"),
+                new MeetingTurn(2, "resource", "behavior", "基于前面争论，提出个性化资源包方案，说明每类资源解决什么问题。"),
+                new MeetingTurn(2, "practice", "resource", "回应资源方案，补充练习任务如何承接资源，并指出题目梯度。"),
+                new MeetingTurn(2, "report", "practice", "汇总诊断、资源和练习方案，形成待审核的个性化资源草案。"),
+                new MeetingTurn(3, "qualityReview", "report", "站在审核者角度追问资源和练习是否可直接给学生使用，指出需要修改的地方。"),
+                new MeetingTurn(3, "consistencyReview", "qualityReview", "检查资源方案是否与画像证据、薄弱点、能力维度一致，并回应审核意见。")
+        );
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage runMeetingTurn(StageLearningEvaluationVO profile,
+                                                                                 TeacherAgentResourceGenerateRequest request,
+                                                                                 List<String> resourceTypes,
+                                                                                 Map<String, Object> evidencePack,
+                                                                                 List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> previousMessages,
+                                                                                 MeetingTurn turn,
+                                                                                 String providerKey,
+                                                                                 Long teacherId,
+                                                                                 int turnIndex) {
+        try {
+            CompletableFuture<QbLlmCall> future = CompletableFuture.supplyAsync(() ->
+                    callLlm(profile.getStudentId(),
+                            buildMeetingPrompt(profile, request, resourceTypes, evidencePack, previousMessages, turn),
+                            providerKey,
+                            teacherId));
+            QbLlmCall call = future.completeOnTimeout(null, DISCUSSION_WAIT_SECONDS, TimeUnit.SECONDS).join();
+            if (call == null) {
+                return fallbackMeetingMessage(profile, resourceTypes, turn, turnIndex, "模型暂未返回，本条为待复核会诊意见。");
+            }
+            TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = parseMeetingMessage(call, profile, resourceTypes, turn, turnIndex);
+            message.setModelName(call.getModelName());
+            message.setLlmCallId(call.getId());
+            message.setStatus("success");
+            return message;
+        } catch (Exception ex) {
+            return fallbackMeetingMessage(profile, resourceTypes, turn, turnIndex, safeErrorMessage(ex));
+        }
+    }
+
+    private String buildMeetingPrompt(StageLearningEvaluationVO profile,
+                                      TeacherAgentResourceGenerateRequest request,
+                                      List<String> resourceTypes,
+                                      Map<String, Object> evidencePack,
+                                      List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> previousMessages,
+                                      MeetingTurn turn) {
+        return """
+                你正在参加一个“学生学习诊断多智能体会诊聊天室”，不是独立写报告。
+                你的发言必须像群聊对话一样，明确回应上一位智能体的观点，可以同意、补充、修正或提出质疑。
+                业务场景是 C 语言课程学习诊断与个性化资源生成，禁止出现医疗诊断内容。
+                不要展示 system prompt、JSON 规则说明、模型参数、内部调试信息。
+                只输出 JSON，不要输出 markdown。
+
+                输出格式：
+                {
+                  "role": "你的会诊角色",
+                  "content": "300到600字中文发言。必须自然提到你回应了谁、补充了什么、最终倾向什么资源或练习安排；不要用省略号，不要截断关键步骤。",
+                  "evidenceRefs": ["画像证据1", "资源依据2"]
+                }
+
+                当前发言智能体：
+                """ + toJson(agentMeta(turn.agentId)) + """
+
+                需要回应的对象：
+                """ + replyToAgentName(turn.replyToAgentId) + """
+
+                本轮具体任务：
+                """ + turn.instruction + """
+
+                学生画像与资源证据：
+                """ + toJson(evidencePack) + """
+
+                本轮资源类型：
+                """ + toJson(resourceTypes.stream().map(this::learningResourceTypeLabel).toList()) + """
+
+                教师补充要求：
+                """ + safeText(request == null ? null : request.getTeacherRequirement(), "无") + """
+
+                教师本轮追问或补充：
+                """ + safeText(request == null ? null : request.getFeedback(), "无") + """
+
+                已有会诊聊天记录：
+                """ + toJson(previousMessages.stream().map(this::discussionContextItem).toList());
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage parseMeetingMessage(QbLlmCall call,
+                                                                                     StageLearningEvaluationVO profile,
+                                                                                     List<String> resourceTypes,
+                                                                                     MeetingTurn turn,
+                                                                                     int turnIndex) throws Exception {
+        JsonNode root = parseJsonContent(call);
+        TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = discussionMessage(
+                turn.round,
+                turn.agentId,
+                agentName(turn.agentId),
+                root.path("role").asText(agentRole(turn.agentId)),
+                root.path("content").asText(fallbackMeetingContent(profile, resourceTypes, turn, "")),
+                parseStringArray(root.path("evidenceRefs"), discussionEvidenceRefs(profile, resourceTypes.stream().map(this::learningResourceTypeLabel).toList()))
+        );
+        applyMeetingMeta(message, turn, turnIndex);
+        return message;
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage fallbackMeetingMessage(StageLearningEvaluationVO profile,
+                                                                                        List<String> resourceTypes,
+                                                                                        MeetingTurn turn,
+                                                                                        int turnIndex,
+                                                                                        String reason) {
+        TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = discussionMessage(
+                turn.round,
+                turn.agentId,
+                agentName(turn.agentId),
+                agentRole(turn.agentId),
+                fallbackMeetingContent(profile, resourceTypes, turn, reason),
+                discussionEvidenceRefs(profile, resourceTypes.stream().map(this::learningResourceTypeLabel).toList())
+        );
+        applyMeetingMeta(message, turn, turnIndex);
+        message.setStatus("fallback");
+        return message;
+    }
+
+    private void applyMeetingMeta(TeacherAgentResourceGenerateVO.AgentDiscussionMessage message,
+                                  MeetingTurn turn,
+                                  int turnIndex) {
+        message.setId("meeting-" + turnIndex + "-" + turn.agentId);
+        message.setTurnIndex(turnIndex);
+        message.setReplyToAgentId(turn.replyToAgentId);
+        message.setReplyToAgentName(turn.replyToAgentId == null ? "" : agentName(turn.replyToAgentId));
+    }
+
+    private String fallbackMeetingContent(StageLearningEvaluationVO profile,
+                                          List<String> resourceTypes,
+                                          MeetingTurn turn,
+                                          String reason) {
+        List<String> weakPoints = weakPointNames(profile);
+        List<String> weakDimensions = weakDimensionNames(profile);
+        String weakPointText = weakPoints.isEmpty() ? "当前薄弱知识点" : String.join("、", weakPoints);
+        String weakDimensionText = weakDimensions.isEmpty() ? "综合学习能力" : String.join("、", weakDimensions);
+        List<String> resourceLabels = resourceTypes.stream().map(this::learningResourceTypeLabel).toList();
+        String resourceText = resourceLabels.isEmpty() ? "知识讲解、补救练习、学习路径" : String.join("、", resourceLabels);
+        String suffix = StringUtils.hasText(reason) ? " 这条意见由系统兜底生成，建议教师复核。" : "";
+        return switch (turn.agentId) {
+            case "coordinator" -> "我先发起本轮会诊：大家需要围绕 " + weakPointText + " 和 " + weakDimensionText + " 判断学生卡在哪里，再共同决定资源组合。" + suffix;
+            case "knowledge" -> "我回应主持人的议题：知识层面应先补 " + weakPointText + "，资源不能泛讲，要把概念、例题和易错点放在同一条学习链里。" + suffix;
+            case "ability" -> "我补充知识智能体的判断：这些薄弱点会继续影响 " + weakDimensionText + "，所以资源后面必须接变式练习，验证学生能否迁移。" + suffix;
+            case "behavior" -> "我对能力评估再补一层：如果学生只看讲解不复盘错因，仍可能在边界条件和输入输出上反复出错，需要加入错题复盘清单。" + suffix;
+            case "resource" -> "我基于前面意见提出资源包：先给 " + weakPointText + " 的讲解材料，再配补救练习和学习路径，资源类型建议为 " + resourceText + "。" + suffix;
+            case "practice" -> "我回应资源方案：练习要分三层，先基础识别，再变式迁移，最后用错因复盘题让学生写出判断依据。" + suffix;
+            case "qualityReview" -> "我审核练习方案：资源可以采用，但需要保证题干、答案、解析和知识点标签完整，视频或讲义要能直接给学生使用。" + suffix;
+            case "consistencyReview" -> "我回应审核意见：资源方向与画像证据一致，重点仍应锁定 " + weakPointText + "，避免生成过宽泛的综合材料。" + suffix;
+            case "report" -> "我汇总会诊共识：本次个性化方案应采用“讲解资源 + 补救练习 + 错题复盘 + 阶段学习路径”，教师审核后再发送给学生。" + suffix;
+            default -> "我已根据前面智能体意见补充本轮会诊观点。" + suffix;
+        };
+    }
+
+    private static class MeetingTurn {
+        private final Integer round;
+        private final String agentId;
+        private final String replyToAgentId;
+        private final String instruction;
+
+        private MeetingTurn(Integer round, String agentId, String replyToAgentId, String instruction) {
+            this.round = round;
+            this.agentId = agentId;
+            this.replyToAgentId = replyToAgentId;
+            this.instruction = instruction;
+        }
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage runSingleAgentDiscussion(StageLearningEvaluationVO profile,
+                                                                                          TeacherAgentResourceGenerateRequest request,
+                                                                                          List<String> resourceTypes,
+                                                                                          Map<String, Object> evidencePack,
+                                                                                          List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> previousMessages,
+                                                                                          String agentId,
+                                                                                          String providerKey,
+                                                                                          Long teacherId) {
+        try {
+            CompletableFuture<QbLlmCall> future = CompletableFuture.supplyAsync(() ->
+                    callLlm(profile.getStudentId(),
+                            buildAgentDiscussionPrompt(profile, request, resourceTypes, evidencePack, previousMessages, agentId),
+                            providerKey,
+                            teacherId));
+            QbLlmCall call = future.completeOnTimeout(null, DISCUSSION_WAIT_SECONDS, TimeUnit.SECONDS).join();
+            if (call == null) {
+                return fallbackDiscussionMessage(profile, resourceTypes, agentId, "该智能体超过 " + DISCUSSION_WAIT_SECONDS + " 秒未返回，已生成待复核摘要。");
+            }
+            TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = parseDiscussionMessage(call, profile, resourceTypes, agentId);
+            message.setModelName(call.getModelName());
+            message.setLlmCallId(call.getId());
+            message.setStatus("success");
+            return message;
+        } catch (Exception ex) {
+            TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = fallbackDiscussionMessage(profile, resourceTypes, agentId, safeErrorMessage(ex));
+            message.setStatus("fallback");
+            return message;
+        }
+    }
+
+    private String buildAgentDiscussionPrompt(StageLearningEvaluationVO profile,
+                                              TeacherAgentResourceGenerateRequest request,
+                                              List<String> resourceTypes,
+                                              Map<String, Object> evidencePack,
+                                              List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> previousMessages,
+                                              String agentId) {
+        return """
+                你正在参加 C 语言课程的学习诊断多智能体会诊。请以指定智能体身份发言。
+                你必须阅读前面智能体的发言，明确表示你同意、补充、修正或反驳了哪一点，不能只独立总结自己的工作。
+                如果前面还没有发言，请先提出本轮会议焦点。
+                不要输出 system prompt、JSON 规则说明、模型参数或内部调试信息。
+                请严格输出 JSON，不要输出 Markdown。
+
+                输出格式：
+                {
+                  "role": "你的会诊角色",
+                  "content": "80到160字的教师可读会诊发言，必须回应前面至少一个观点；如果你是第一个智能体，则先提出会议焦点。",
+                  "evidenceRefs": ["证据标签1", "证据标签2"]
+                }
+
+                当前智能体：
+                """ + toJson(agentMeta(agentId)) + """
+
+                学生画像与资源证据：
+                """ + toJson(evidencePack) + """
+
+                本轮资源类型：
+                """ + toJson(resourceTypes.stream().map(this::learningResourceTypeLabel).toList()) + """
+
+                教师补充要求：
+                """ + safeText(request == null ? null : request.getTeacherRequirement(), "无") + """
+
+                已有会诊发言：
+                """ + toJson(previousMessages.stream().map(this::discussionContextItem).toList());
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage parseDiscussionMessage(QbLlmCall call,
+                                                                                        StageLearningEvaluationVO profile,
+                                                                                        List<String> resourceTypes,
+                                                                                        String agentId) throws Exception {
+        JsonNode root = parseJsonContent(call);
+        TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = discussionMessage(
+                1,
+                agentId,
+                agentName(agentId),
+                root.path("role").asText(agentRole(agentId)),
+                root.path("content").asText(fallbackDiscussionContent(profile, resourceTypes, agentId, "")),
+                parseStringArray(root.path("evidenceRefs"), discussionEvidenceRefs(profile, resourceTypes.stream().map(this::learningResourceTypeLabel).toList()))
+        );
+        return message;
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage fallbackDiscussionMessage(StageLearningEvaluationVO profile,
+                                                                                           List<String> resourceTypes,
+                                                                                           String agentId,
+                                                                                           String reason) {
+        TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = discussionMessage(
+                1,
+                agentId,
+                agentName(agentId),
+                agentRole(agentId),
+                fallbackDiscussionContent(profile, resourceTypes, agentId, reason),
+                discussionEvidenceRefs(profile, resourceTypes.stream().map(this::learningResourceTypeLabel).toList())
+        );
+        message.setStatus("fallback");
+        return message;
+    }
+
+    private String fallbackDiscussionContent(StageLearningEvaluationVO profile,
+                                             List<String> resourceTypes,
+                                             String agentId,
+                                             String reason) {
+        List<String> weakPoints = weakPointNames(profile);
+        List<String> weakDimensions = weakDimensionNames(profile);
+        String weakPointText = weakPoints.isEmpty() ? "当前薄弱知识点" : String.join("、", weakPoints);
+        String weakDimensionText = weakDimensions.isEmpty() ? "综合学习能力" : String.join("、", weakDimensions);
+        String suffix = StringUtils.hasText(reason) ? " 当前模型发言暂未完整返回，建议教师复核。" : "";
+        return switch (agentId) {
+            case "preprocess" -> "我先整理画像证据：本轮会诊应围绕 " + weakPointText + " 和 " + weakDimensionText + " 展开。" + suffix;
+            case "coordinator" -> "我同意先聚焦画像证据，并将后续讨论分配给知识、能力、错因、资源和审核智能体。" + suffix;
+            case "knowledge" -> "我补充知识诊断意见：优先补强 " + weakPointText + "，资源内容要直接讲清概念、例题和易错点。" + suffix;
+            case "ability" -> "我补充能力评估意见：当前重点是 " + weakDimensionText + "，练习应从基础识别过渡到变式迁移。" + suffix;
+            case "behavior" -> "我从错因复盘角度补充：需要让学生说明变量状态、边界条件和输入输出依据。" + suffix;
+            case "resource" -> "我同意前面的诊断，资源应围绕 " + weakPointText + " 生成讲解、练习和学习路径。" + suffix;
+            case "practice" -> "我补充练习设计：题目应包含基础题、变式题和错因复盘题，验证学生是否真正迁移。" + suffix;
+            case "report" -> "我汇总当前会诊共识：先补 " + weakPointText + "，再通过练习和错题复盘验证掌握情况。" + suffix;
+            case "qualityReview" -> "我将检查资源完整性、可用性和难度适配，确保教师可直接审核后发布。" + suffix;
+            case "consistencyReview" -> "我将检查资源是否与学生画像、薄弱点和课程目标一致，避免生成泛化内容。" + suffix;
+            default -> "我已根据当前画像证据补充会诊意见。" + suffix;
+        };
+    }
+
+    private Map<String, Object> agentMeta(String agentId) {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("agentId", agentId);
+        meta.put("agentName", agentName(agentId));
+        meta.put("role", agentRole(agentId));
+        return meta;
+    }
+
+    private Map<String, Object> discussionContextItem(TeacherAgentResourceGenerateVO.AgentDiscussionMessage message) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("turnIndex", message.getTurnIndex());
+        row.put("round", message.getRound());
+        row.put("agentName", message.getAgentName());
+        row.put("replyToAgentName", message.getReplyToAgentName());
+        row.put("role", message.getRole());
+        row.put("content", message.getContent());
+        row.put("evidenceRefs", message.getEvidenceRefs());
+        return row;
+    }
+
+    private String replyToAgentName(String agentId) {
+        return StringUtils.hasText(agentId) ? agentName(agentId) : "会议主持";
+    }
+
+    private String agentName(String agentId) {
+        return switch (agentId) {
+            case "preprocess" -> "预处理智能体";
+            case "coordinator" -> "协调智能体";
+            case "knowledge" -> "知识掌握分析智能体";
+            case "ability" -> "能力维度评估智能体";
+            case "behavior" -> "错因模式分析智能体";
+            case "resource" -> "资源生成智能体";
+            case "practice" -> "练习生成智能体";
+            case "report" -> "会诊决策智能体";
+            case "qualityReview" -> "资源质量审核智能体";
+            case "consistencyReview" -> "主题一致性审核智能体";
+            default -> "学习诊断智能体";
+        };
+    }
+
+    private String agentRole(String agentId) {
+        return switch (agentId) {
+            case "preprocess" -> "证据整理";
+            case "coordinator" -> "会议主持";
+            case "knowledge" -> "知识诊断";
+            case "ability" -> "能力评估";
+            case "behavior" -> "错因复盘";
+            case "resource" -> "资源建议";
+            case "practice" -> "练习设计";
+            case "report" -> "最终共识";
+            case "qualityReview" -> "质量审核";
+            case "consistencyReview" -> "一致性审核";
+            default -> "学习诊断";
+        };
+    }
+
+    private List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> discussionMessagesFromRequest(TeacherAgentResourceGenerateRequest request) {
+        if (request == null || request.getDiscussionMessages() == null) {
+            return new ArrayList<>();
+        }
+        List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> rows = new ArrayList<>();
+        int index = 0;
+        for (Map<String, Object> item : request.getDiscussionMessages()) {
+            if (item == null) {
+                continue;
+            }
+            TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = new TeacherAgentResourceGenerateVO.AgentDiscussionMessage();
+            message.setId(String.valueOf(item.getOrDefault("id", "request-message-" + index)));
+            message.setRound(asInteger(item.get("round"), 1));
+            message.setTurnIndex(asInteger(item.get("turnIndex"), index + 1));
+            message.setAgentId(String.valueOf(item.getOrDefault("agentId", "agent-" + index)));
+            message.setAgentName(String.valueOf(item.getOrDefault("agentName", agentName(message.getAgentId()))));
+            Object replyToAgentId = item.get("replyToAgentId");
+            if (replyToAgentId != null && StringUtils.hasText(String.valueOf(replyToAgentId))) {
+                message.setReplyToAgentId(String.valueOf(replyToAgentId));
+                message.setReplyToAgentName(String.valueOf(item.getOrDefault("replyToAgentName", agentName(message.getReplyToAgentId()))));
+            }
+            message.setRole(String.valueOf(item.getOrDefault("role", agentRole(message.getAgentId()))));
+            message.setContent(String.valueOf(item.getOrDefault("content", "")));
+            message.setStatus(String.valueOf(item.getOrDefault("status", "")));
+            Object refs = item.get("evidenceRefs");
+            if (refs instanceof List<?> list) {
+                message.setEvidenceRefs(list.stream().map(String::valueOf).filter(StringUtils::hasText).limit(6).toList());
+            }
+            rows.add(message);
+            index++;
+        }
+        return rows;
+    }
+
+    private Integer asInteger(Object value, Integer fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.parseInt(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private List<String> parseStringArray(JsonNode node, List<String> fallback) {
+        if (node == null || !node.isArray()) {
+            return fallback;
+        }
+        List<String> rows = new ArrayList<>();
+        for (JsonNode item : node) {
+            String value = item.asText("");
+            if (StringUtils.hasText(value)) {
+                rows.add(value.trim());
+            }
+        }
+        return rows.isEmpty() ? fallback : rows.stream().distinct().limit(6).toList();
+    }
+
+    private TeacherAgentResourceGenerateVO.DecisionSummary buildDecisionSummary(StageLearningEvaluationVO profile,
+                                                                                TeacherAgentResourceGenerateRequest request,
+                                                                                List<String> resourceTypes,
+                                                                                List<TeacherAgentResourceGenerateVO.ResourceDraft> resources,
+                                                                                List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> messages) {
+        List<String> weakPoints = weakPointNames(profile);
+        List<String> weakDimensions = weakDimensionNames(profile);
+        List<String> resourceLabels = resourceTypes.stream().map(this::learningResourceTypeLabel).distinct().toList();
+        String focus = weakPoints.isEmpty() ? "当前阶段核心知识点" : String.join("、", weakPoints);
+        String dimension = weakDimensions.isEmpty() ? "综合学习能力" : String.join("、", weakDimensions);
+
+        TeacherAgentResourceGenerateVO.DecisionSummary summary = new TeacherAgentResourceGenerateVO.DecisionSummary();
+        summary.setStatus(messages == null || messages.isEmpty() ? "fallback" : "ready");
+        summary.setHeadline("优先围绕“" + focus + "”完成一轮补强");
+        summary.setCurrentProblem("当前画像显示需要关注“" + dimension + "”，资源生成应避免泛泛讲解，直接服务于薄弱知识点和错题复盘。");
+        summary.setWeakPoints(weakPoints);
+        summary.setRecommendedResources(resourceLabels.isEmpty() ? List.of("知识讲解", "补救练习", "学习路径") : resourceLabels);
+        summary.setRecommendedPractice(List.of("先看知识讲解", "完成补救练习", "复盘最近错题", "用变式题确认迁移能力"));
+        summary.setTeacherAction("建议教师先审核 " + resources.size() + " 个资源草案，重点确认是否覆盖“" + focus + "”，通过后再发布给学生。");
+        summary.setEvidenceRefs(discussionEvidenceRefs(profile, resourceLabels));
+        return summary;
+    }
+
+    private TeacherAgentResourceGenerateVO.AgentDiscussionMessage discussionMessage(Integer round,
+                                                                                   String agentId,
+                                                                                   String agentName,
+                                                                                   String role,
+                                                                                   String content,
+                                                                                   List<String> evidenceRefs) {
+        TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = new TeacherAgentResourceGenerateVO.AgentDiscussionMessage();
+        message.setRound(round);
+        message.setAgentId(agentId);
+        message.setAgentName(agentName);
+        message.setRole(role);
+        message.setContent(content);
+        message.setEvidenceRefs(evidenceRefs == null ? List.of() : evidenceRefs);
+        message.setCreatedAt(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        message.setId("discussion-" + safeText(agentId, "agent") + "-" + System.nanoTime());
+        return message;
+    }
+
+    private List<String> discussionEvidenceRefs(StageLearningEvaluationVO profile, List<String> resourceLabels) {
+        List<String> refs = new ArrayList<>();
+        refs.add(safeText(profile.getStageName(), "当前阶段") + "画像");
+        if (profile.getCompletedAttemptCount() != null) {
+            refs.add("已完成作答 " + profile.getCompletedAttemptCount() + " 次");
+        }
+        if (profile.getAbilityScore() != null) {
+            refs.add("能力值 " + profile.getAbilityScore());
+        }
+        List<String> weakPoints = weakPointNames(profile);
+        if (!weakPoints.isEmpty()) {
+            refs.add("薄弱知识点：" + String.join("、", weakPoints));
+        }
+        if (resourceLabels != null && !resourceLabels.isEmpty()) {
+            refs.add("资源类型：" + String.join("、", resourceLabels));
+        }
+        return refs;
+    }
+
+    private String learningResourceTypeLabel(String type) {
+        return switch (normalizeResourceType(type)) {
+            case "knowledge_video", "animated_explainer" -> "知识讲解视频";
+            case "remedial_exercise", "variant_practice" -> "补救练习";
+            case "knowledge_handout", "knowledge_pack" -> "知识点讲义";
+            case "error_reflection", "reflection_list" -> "错因复盘";
+            case "learning_path" -> "学习路径";
+            case "interactive_quiz" -> "互动测验";
+            case "ability_task" -> "能力任务";
+            default -> "个性化学习资源";
+        };
     }
 
     private String buildGenerationPrompt(StageLearningEvaluationVO profile,

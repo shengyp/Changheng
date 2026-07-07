@@ -33,6 +33,20 @@ public class TeacherAgentResourceController {
         return ApiResponse.ok(teacherAgentResourceService.generate(SecurityContextUtil.getUserId(), admin, request));
     }
 
+    @PostMapping("/discuss")
+    public ApiResponse<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> discuss(@RequestBody @Valid TeacherAgentResourceGenerateRequest request) {
+        List<String> roles = SecurityContextUtil.currentRoles();
+        boolean admin = roles.stream().anyMatch(role -> "ADMIN".equalsIgnoreCase(role) || "ROLE_ADMIN".equalsIgnoreCase(role));
+        return ApiResponse.ok(teacherAgentResourceService.discuss(SecurityContextUtil.getUserId(), admin, request));
+    }
+
+    @PostMapping("/discuss-meeting")
+    public ApiResponse<List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage>> discussMeeting(@RequestBody @Valid TeacherAgentResourceGenerateRequest request) {
+        List<String> roles = SecurityContextUtil.currentRoles();
+        boolean admin = roles.stream().anyMatch(role -> "ADMIN".equalsIgnoreCase(role) || "ROLE_ADMIN".equalsIgnoreCase(role));
+        return ApiResponse.ok(teacherAgentResourceService.discussMeeting(SecurityContextUtil.getUserId(), admin, request));
+    }
+
     @PostMapping("/generate-tasks")
     public ApiResponse<TeacherAgentResourceTaskVO> startGenerateTask(@RequestBody @Valid TeacherAgentResourceGenerateRequest request) {
         List<String> roles = SecurityContextUtil.currentRoles();

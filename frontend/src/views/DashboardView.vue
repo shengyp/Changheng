@@ -196,8 +196,14 @@ const shortcutItems = computed(() => {
     { title: '我的班级', desc: '加入班级并查看班级信息', path: '/classes/my', roles: ['STUDENT'], icon: UserFilled, group: '学生学习' },
     { title: '作答记录', desc: '查看练习和作业结果', path: '/attempts/history', roles: ['STUDENT'], icon: Files, group: '学习反馈' },
     { title: '学习统计', desc: '查看错题、掌握度和能力走势', path: '/stats', roles: ['STUDENT'], icon: DataAnalysis, group: '学习反馈' },
+    { title: '学生个性画像', desc: '查看画像分、薄弱点和画像依据', path: '/knowledge-profile', roles: ['STUDENT'], icon: DataAnalysis, group: '学习反馈' },
+    { title: '阶段评价', desc: '查看阶段表现和教师反馈', path: '/stage-evaluation', roles: ['STUDENT'], icon: Management, group: '学习反馈' },
+    { title: '智能推荐', desc: '查看系统推荐的资源和练习', path: '/smart-recommendations', roles: ['STUDENT'], icon: Connection, group: '智能学习' },
     { title: '个性化练习', desc: '根据薄弱知识点生成练习', path: '/personalized-practice', roles: ['STUDENT'], icon: CollectionTag, group: '智能学习' },
     { title: '学习路径', desc: '按画像生成可执行的学习安排', path: '/learning-path', roles: ['STUDENT'], icon: CollectionTag, group: '智能学习' },
+    { title: '大模型中心', desc: '查看可用学习助手和模型服务', path: '/llm/models', roles: ['STUDENT'], icon: Setting, group: '智能学习' },
+    { title: '资源库', desc: '查看教师发布和系统推荐资源', path: '/learning-resources', roles: ['STUDENT'], icon: FolderOpened, group: '学习资源' },
+    { title: '我的申诉', desc: '查看作答申诉和处理进度', path: '/appeals/my', roles: ['STUDENT'], icon: Files, group: '学习资源' },
   ]
   return all.filter((item) => auth.hasAnyRole(item.roles))
 })
@@ -210,6 +216,32 @@ const groupedShortcuts = computed(() => {
   })
   return Array.from(map.entries()).map(([title, items]) => ({ title, items }))
 })
+
+const studentStatCards = computed(() => [
+  { title: '学习任务', value: '作业', desc: '查看待完成和已提交任务', path: '/assignments/my', icon: DocumentChecked, tone: 'mint' },
+  { title: '练习入口', value: '题库', desc: '进入题库练习与专项训练', path: '/question-bank', icon: Reading, tone: 'blue' },
+  { title: '学习画像', value: '诊断', desc: '查看薄弱点、优势点和证据链', path: '/knowledge-profile', icon: DataAnalysis, tone: 'teal' },
+  { title: '推荐资源', value: '资源', desc: '查看学习资源与智能推荐', path: '/smart-recommendations', icon: CollectionTag, tone: 'gold' },
+])
+
+const studentTodayTasks = computed(() => [
+  { title: '查看我的作业', desc: '先确认待完成作业和提交状态。', path: '/assignments/my', icon: DocumentChecked, tag: '任务' },
+  { title: '完成题库练习', desc: '从题库选择题目，巩固当前知识点。', path: '/question-bank', icon: Reading, tag: '练习' },
+  { title: '复盘学习画像', desc: '查看最新薄弱维度和下一步建议。', path: '/knowledge-profile', icon: DataAnalysis, tag: '诊断' },
+])
+
+const studentInsightCards = computed(() => [
+  { title: '学习统计', desc: '查看错题、掌握度和能力走势。', path: '/stats', icon: DataAnalysis },
+  { title: '作答记录', desc: '回看练习和作业结果。', path: '/attempts/history', icon: Files },
+  { title: '阶段评价', desc: '查看阶段表现和教师反馈。', path: '/stage-evaluation', icon: Management },
+])
+
+const studentSmartCards = computed(() => [
+  { title: '个性化练习', desc: '根据薄弱知识点生成练习。', path: '/personalized-practice', icon: CollectionTag, tone: 'mint' },
+  { title: '学习路径', desc: '按画像生成可执行安排。', path: '/learning-path', icon: Connection, tone: 'blue' },
+  { title: '智能推荐', desc: '查看系统推荐资源和练习。', path: '/smart-recommendations', icon: Reading, tone: 'teal' },
+  { title: '资源库', desc: '查看教师发布和系统资源。', path: '/learning-resources', icon: FolderOpened, tone: 'gold' },
+])
 
 watch(isBackendWorkspace, async (value) => {
   if (!value) return
@@ -640,35 +672,132 @@ function cleanFeedbackTitle(text) {
     </aside>
   </div>
 
-  <div v-else class="dashboard-root">
-    <section class="workspace-hero" aria-labelledby="dashboard-title">
-      <div>
-        <p class="eyebrow">Student Workspace</p>
-        <h1 id="dashboard-title">{{ displayName }}</h1>
-        <p>集中查看常用学习功能入口，快速进入作业、练习、统计和学习路径。</p>
+  <div v-else class="student-dashboard">
+    <section class="student-hero" aria-labelledby="dashboard-title">
+      <div class="student-hero-card">
+        <span class="profile-avatar">{{ firstChar(displayName) }}</span>
+        <div>
+          <p class="eyebrow">Student Workspace</p>
+          <h1 id="dashboard-title">{{ displayName }}</h1>
+          <span>学生</span>
+        </div>
       </div>
-      <el-button type="primary" :icon="ArrowRight" @click="router.push(shortcutItems[0]?.path || '/dashboard')">
-        进入常用功能
+      <div class="student-hero-copy">
+        <h2>首页</h2>
+        <p>集中查看作业、练习、画像诊断、学习路径和智能推荐，快速进入下一步学习。</p>
+      </div>
+      <el-button class="student-hero-action" plain type="primary" :icon="ArrowRight" @click="router.push('/assignments/my')">
+        进入我的作业
       </el-button>
     </section>
 
-    <section v-for="group in groupedShortcuts" :key="group.title" class="shortcut-section">
-      <div class="section-heading">
-        <h2>{{ group.title }}</h2>
-        <span>{{ group.items.length }} 项</span>
-      </div>
-      <div class="shortcut-grid">
-        <button v-for="item in group.items" :key="item.path" type="button" class="shortcut-item" @click="router.push(item.path)">
-          <span class="shortcut-icon">
-            <el-icon><component :is="item.icon" /></el-icon>
-          </span>
-          <span class="shortcut-copy">
+    <section class="student-summary-grid" aria-label="学习概览">
+      <button
+        v-for="card in studentStatCards"
+        :key="card.title"
+        type="button"
+        :class="['student-summary-card', card.tone]"
+        @click="router.push(card.path)"
+      >
+        <span class="summary-icon">
+          <el-icon><component :is="card.icon" /></el-icon>
+        </span>
+        <span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.title }}</small>
+          <em>{{ card.desc }}</em>
+        </span>
+      </button>
+    </section>
+
+    <section class="student-bento-grid" aria-label="学生工作台">
+      <article class="student-panel student-learning-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Learning</p>
+            <h2>学生学习</h2>
+          </div>
+          <span>核心入口</span>
+        </div>
+        <div class="student-primary-actions">
+          <button v-for="item in groupedShortcuts[0]?.items || []" :key="item.path" type="button" class="student-action-card" @click="router.push(item.path)">
+            <span class="shortcut-icon">
+              <el-icon><component :is="item.icon" /></el-icon>
+            </span>
+            <span class="shortcut-copy">
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.desc }}</small>
+            </span>
+            <el-icon class="shortcut-arrow"><ArrowRight /></el-icon>
+          </button>
+        </div>
+      </article>
+
+      <article class="student-panel student-task-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Today</p>
+            <h2>今日学习建议</h2>
+          </div>
+          <span>{{ studentTodayTasks.length }} 项</span>
+        </div>
+        <div class="student-task-list">
+          <button v-for="task in studentTodayTasks" :key="task.title" type="button" class="student-task-row" @click="router.push(task.path)">
+            <span class="task-tag">{{ task.tag }}</span>
+            <span>
+              <strong>{{ task.title }}</strong>
+              <small>{{ task.desc }}</small>
+            </span>
+            <el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+      </article>
+
+      <article class="student-panel student-feedback-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Feedback</p>
+            <h2>学习反馈</h2>
+          </div>
+          <span>{{ studentInsightCards.length }} 项</span>
+        </div>
+        <div class="student-insight-grid">
+          <button v-for="item in studentInsightCards" :key="item.path" type="button" class="student-mini-card" @click="router.push(item.path)">
+            <span class="shortcut-icon">
+              <el-icon><component :is="item.icon" /></el-icon>
+            </span>
             <strong>{{ item.title }}</strong>
             <small>{{ item.desc }}</small>
-          </span>
-          <el-icon class="shortcut-arrow"><ArrowRight /></el-icon>
-        </button>
-      </div>
+          </button>
+        </div>
+      </article>
+
+      <article class="student-panel student-smart-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Smart Learning</p>
+            <h2>智能学习</h2>
+          </div>
+          <span>{{ studentSmartCards.length }} 项</span>
+        </div>
+        <div class="student-smart-grid">
+          <button
+            v-for="item in studentSmartCards"
+            :key="item.path"
+            type="button"
+            :class="['student-smart-card', item.tone]"
+            @click="router.push(item.path)"
+          >
+            <span class="shortcut-icon">
+              <el-icon><component :is="item.icon" /></el-icon>
+            </span>
+            <span>
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.desc }}</small>
+            </span>
+          </button>
+        </div>
+      </article>
     </section>
   </div>
 </template>
@@ -1369,45 +1498,233 @@ function cleanFeedbackTitle(text) {
   font-size: 12px;
 }
 
-.dashboard-root {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+.student-dashboard {
+  display: grid;
+  gap: 18px;
+  min-height: calc(100vh - 120px);
+  padding: 8px 8px 72px;
+  color: #1e293b;
 }
 
-.workspace-hero,
-.shortcut-section {
+.student-hero,
+.student-panel,
+.student-summary-card {
   border: 1px solid rgba(226, 232, 240, 0.92);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.05);
 }
 
-.workspace-hero {
-  display: flex;
+.student-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(260px, 350px) minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 24px;
-  min-height: 176px;
-  padding: 30px;
+  min-height: 188px;
+  overflow: hidden;
+  padding: 28px;
+  background:
+    linear-gradient(112deg, rgba(20, 184, 166, 0.78), rgba(153, 246, 228, 0.36), rgba(255, 255, 255, 0.94)),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(15, 118, 110, 0.12));
+  background-size: 200% 200%, 100% 100%;
+  animation: heroGradientFlow 18s ease-in-out infinite alternate;
 }
 
-.workspace-hero h1 {
+.student-hero::before {
+  position: absolute;
+  inset: 0;
+  content: '';
+  opacity: 0.38;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.34) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.34) 1px, transparent 1px);
+  background-size: 28px 28px;
+  animation: dataTextureDrift 24s linear infinite;
+}
+
+.student-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.student-hero-card {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.32);
+  backdrop-filter: blur(12px);
+}
+
+.student-hero-card h1,
+.student-hero-copy h2 {
   margin: 0;
-  color: #172033;
-  font-size: 32px;
-  line-height: 1.2;
+  color: #0f172a;
+  line-height: 1.15;
 }
 
-.workspace-hero p:last-child {
-  max-width: 760px;
+.student-hero-card h1 {
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.student-hero-card span:not(.profile-avatar) {
+  display: inline-flex;
+  margin-top: 8px;
+  border-radius: 999px;
+  padding: 3px 12px;
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.student-hero-copy h2 {
+  font-size: 30px;
+  font-weight: 800;
+}
+
+.student-hero-copy p {
+  max-width: 720px;
   margin: 10px 0 0;
-  color: #667085;
+  color: #334155;
+  font-size: 15px;
   line-height: 1.7;
 }
 
-.shortcut-section {
+.student-hero-action {
+  border: 0;
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.72);
+  font-weight: 800;
+  box-shadow: 0 12px 26px rgba(15, 118, 110, 0.14);
+  backdrop-filter: blur(12px);
+}
+
+.student-hero-action:hover,
+.student-hero-action:focus {
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.student-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.student-summary-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 104px;
+  padding: 18px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease;
+}
+
+.student-summary-card:hover,
+.student-summary-card:focus-visible,
+.student-panel:hover {
+  transform: translateY(-2px);
+  border-color: rgba(20, 184, 166, 0.32);
+  box-shadow: 0 18px 36px rgba(15, 118, 110, 0.08);
+  outline: none;
+}
+
+.summary-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  color: #0f766e;
+  background: #ccfbf1;
+  transition: transform 0.24s ease;
+}
+
+.student-summary-card:hover .summary-icon,
+.student-action-card:hover .shortcut-icon,
+.student-mini-card:hover .shortcut-icon,
+.student-smart-card:hover .shortcut-icon {
+  transform: scale(1.08);
+}
+
+.student-summary-card strong,
+.student-summary-card small,
+.student-summary-card em {
+  display: block;
+}
+
+.student-summary-card strong {
+  color: #0f172a;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.student-summary-card small {
+  margin-top: 2px;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.student-summary-card em {
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.student-summary-card.blue .summary-icon,
+.student-smart-card.blue .shortcut-icon {
+  color: #0369a1;
+  background: #e0f2fe;
+}
+
+.student-summary-card.teal .summary-icon,
+.student-smart-card.teal .shortcut-icon {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.student-summary-card.gold .summary-icon,
+.student-smart-card.gold .shortcut-icon {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.student-bento-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.student-panel {
   padding: 22px;
+  transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease;
+}
+
+.student-learning-panel {
+  grid-column: span 7;
+}
+
+.student-task-panel {
+  grid-column: span 5;
+}
+
+.student-feedback-panel {
+  grid-column: span 5;
+}
+
+.student-smart-panel {
+  grid-column: span 7;
 }
 
 .section-heading {
@@ -1429,26 +1746,84 @@ function cleanFeedbackTitle(text) {
   font-size: 13px;
 }
 
-.shortcut-grid {
+.student-primary-actions,
+.student-insight-grid,
+.student-smart-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 14px;
 }
 
-.shortcut-item {
+.student-primary-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.student-insight-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.student-smart-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.student-action-card,
+.student-task-row,
+.student-mini-card,
+.student-smart-card {
+  border: 1px solid #e6edf3;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease, background-color 0.24s ease;
+}
+
+.student-action-card,
+.student-smart-card {
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr) 24px;
   align-items: center;
   gap: 13px;
   min-height: 92px;
   width: 100%;
-  border: 1px solid #e6edf3;
   border-radius: 16px;
-  background: #f8fafc;
   padding: 16px;
-  cursor: pointer;
-  text-align: left;
-  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.student-smart-card {
+  grid-template-columns: 46px minmax(0, 1fr);
+}
+
+.student-task-list {
+  display: grid;
+  gap: 12px;
+}
+
+.student-task-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 13px;
+  min-height: 82px;
+  border-radius: 16px;
+  padding: 15px 16px;
+}
+
+.task-tag {
+  display: inline-flex;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #0f766e;
+  background: #ccfbf1;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.student-mini-card {
+  display: grid;
+  gap: 8px;
+  min-height: 138px;
+  border-radius: 16px;
+  padding: 16px;
 }
 
 .shortcut-icon {
@@ -1482,8 +1857,14 @@ function cleanFeedbackTitle(text) {
   color: #98a2b3;
 }
 
-.shortcut-item:hover,
-.shortcut-item:focus-visible {
+.student-action-card:hover,
+.student-action-card:focus-visible,
+.student-task-row:hover,
+.student-task-row:focus-visible,
+.student-mini-card:hover,
+.student-mini-card:focus-visible,
+.student-smart-card:hover,
+.student-smart-card:focus-visible {
   transform: translateY(-2px);
   border-color: rgba(20, 184, 166, 0.45);
   background: #ffffff;
@@ -1491,8 +1872,39 @@ function cleanFeedbackTitle(text) {
   outline: none;
 }
 
+.student-task-row strong,
+.student-task-row small,
+.student-mini-card strong,
+.student-mini-card small,
+.student-smart-card strong,
+.student-smart-card small {
+  display: block;
+}
+
+.student-task-row strong,
+.student-mini-card strong,
+.student-smart-card strong {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.student-task-row small,
+.student-mini-card small,
+.student-smart-card small {
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 @media (max-width: 1280px) {
   .dashboard-hero {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .student-hero {
     grid-template-columns: 1fr;
     align-items: start;
   }
@@ -1506,10 +1918,23 @@ function cleanFeedbackTitle(text) {
   .insight-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .student-summary-grid,
+  .student-smart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .student-learning-panel,
+  .student-task-panel,
+  .student-feedback-panel,
+  .student-smart-panel {
+    grid-column: span 12;
+  }
 }
 
 @media (max-width: 820px) {
-  .backend-dashboard {
+  .backend-dashboard,
+  .student-dashboard {
     padding: 0 0 90px;
   }
 
@@ -1518,7 +1943,11 @@ function cleanFeedbackTitle(text) {
   }
 
   .student-stat-stack,
-  .review-summary {
+  .review-summary,
+  .student-summary-grid,
+  .student-primary-actions,
+  .student-insight-grid,
+  .student-smart-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1539,34 +1968,43 @@ function cleanFeedbackTitle(text) {
     right: 12px;
     bottom: 12px;
   }
-
-  .workspace-hero {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 @media (max-width: 640px) {
   .dashboard-hero,
   .dash-card,
-  .workspace-hero,
-  .shortcut-section {
+  .student-hero,
+  .student-panel {
     padding: 16px;
   }
 
-  .profile-card {
+  .profile-card,
+  .student-hero-card {
     width: 100%;
   }
 
   .student-stat-stack,
   .review-summary,
-  .insight-metric-grid {
+  .insight-metric-grid,
+  .student-summary-grid,
+  .student-primary-actions,
+  .student-insight-grid,
+  .student-smart-grid {
     grid-template-columns: 1fr;
   }
 
-  .workspace-hero h1,
+  .student-hero-card h1,
+  .student-hero-copy h2,
   .hero-copy h2 {
     font-size: 24px;
+  }
+
+  .student-task-row {
+    grid-template-columns: 50px minmax(0, 1fr);
+  }
+
+  .student-task-row > .el-icon {
+    display: none;
   }
 }
 </style>

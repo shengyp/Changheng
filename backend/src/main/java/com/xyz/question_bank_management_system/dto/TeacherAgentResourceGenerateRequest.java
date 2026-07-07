@@ -26,6 +26,8 @@ public class TeacherAgentResourceGenerateRequest {
     private List<String> selectedResourceTypes;
     private String providerKey;
     private Map<String, String> agentProviderKeys;
+    private String agentId;
+    private List<Map<String, Object>> discussionMessages;
     private String teacherRequirement;
     private String feedback;
 }

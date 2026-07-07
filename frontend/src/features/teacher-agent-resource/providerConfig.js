@@ -20,8 +20,8 @@ export function providerSummaryText(providerOptions = [], defaultProviderKey = '
 }
 
 export function currentAgentProviderKey(agentId, agentOverrides = {}, providerFieldMap = {}) {
-  const providerField = providerFieldMap[agentId]
-  return providerField ? agentOverrides[providerField] || '' : ''
+  const providerField = providerFieldMap[agentId] || agentId
+  return agentOverrides[providerField] || ''
 }
 
 export function currentAgentProviderLabel(agentId, {

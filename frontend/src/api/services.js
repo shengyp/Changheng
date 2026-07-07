@@ -272,6 +272,12 @@ export const teacherApi = {
   generateAgentResources(payload) {
     return post('/api/teacher/agent-resources/generate', payload, { timeout: 180000 })
   },
+  discussAgentResource(payload) {
+    return post('/api/teacher/agent-resources/discuss', payload, { timeout: 90000 })
+  },
+  discussAgentMeeting(payload) {
+    return post('/api/teacher/agent-resources/discuss-meeting', payload, { timeout: 180000 })
+  },
   startGenerateAgentResourcesTask(payload) {
     return post('/api/teacher/agent-resources/generate-tasks', payload, { timeout: 30000 })
   },

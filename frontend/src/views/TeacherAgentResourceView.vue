@@ -121,6 +121,16 @@ const providerOptions = ref([])
 const providerDrawerVisible = ref(false)
 const defaultProviderKey = ref('')
 const agentOverrides = reactive({
+  preprocess: '',
+  coordinator: '',
+  knowledge: '',
+  ability: '',
+  behavior: '',
+  resource: '',
+  practice: '',
+  report: '',
+  qualityReview: '',
+  consistencyReview: '',
   generator: '',
   qualityReviewer: '',
   consistencyReviewer: '',
@@ -129,6 +139,17 @@ const generationTaskId = ref('')
 const generationTaskStatus = ref('idle')
 const generationTaskMessage = ref('')
 const executionStopped = ref(false)
+const activeConsultationTab = ref('discussion')
+const liveConsultationMessages = ref([])
+const pendingConsultationMessages = ref([])
+const consultationLoadingAgentId = ref('')
+const meetingLoading = ref(false)
+const consultationThreadRef = ref(null)
+const consultationWindowOpen = ref(false)
+const consultationState = ref('idle')
+const pausedAgentId = ref('')
+const followUpText = ref('')
+const meetingPlaybackToken = ref(0)
 const videoPlayback = reactive({})
 const quizAnswers = reactive({})
 const VIDEO_SEARCH_URL_MESSAGE = '当前链接是搜索结果页，不是具体视频。请打开某个视频后复制视频播放页链接。'
@@ -137,6 +158,8 @@ let ctx
 let taskPollTimer = null
 let videoTimer = null
 let normalizingGeneratedResources = false
+let componentMounted = false
+const workspaceEventSource = `teacher-agent-resource-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
 const agentOutputs = reactive({
   preprocess: '',
@@ -202,20 +225,15 @@ function stopDrag() {
 
 async function handleAgentClick(agentId) {
   if (hasDragged) return
-  if (activeAgentId.value) {
-    ElMessage.info('智能体正在执行，当前只支持拖动调整位置')
-    return
-  }
   if (!selectedStudent.value) {
     ElMessage.warning('请先选择学生画像')
     return
   }
-  const sequence = agentRunSequences[agentId] || [agentId]
-  for (const currentAgentId of sequence) {
-    if (executionStopped.value) return
-    if (isCompleted(currentAgentId)) continue
-    await runAgent(currentAgentId)
+  if (consultationState.value === 'running' || consultationState.value === 'resuming' || meetingLoading.value) {
+    pauseConsultationForAgent(agentId)
+    return
   }
+  openFollowUpForAgent(agentId)
 }
 // ==========================
 
@@ -247,11 +265,293 @@ const profileStats = computed(() => {
 
 const providerSummaryText = computed(() => buildProviderSummaryText(providerOptions.value, defaultProviderKey.value))
 
+const consultationMessages = computed(() => {
+  if (liveConsultationMessages.value.length > 0 && !Array.isArray(lastRun.value?.discussionMessages)) {
+    return sortConsultationMessages(liveConsultationMessages.value)
+  }
+  const messages = Array.isArray(lastRun.value?.discussionMessages) ? lastRun.value.discussionMessages : []
+  if (messages.length > 0) {
+    const backendMessages = messages.map((item, index) => normalizeConsultationMessage(item, index))
+    if (liveConsultationMessages.value.length === 0) return sortConsultationMessages(backendMessages)
+    const existingIds = new Set(backendMessages.map((item) => item.id))
+    return sortConsultationMessages([
+      ...backendMessages,
+      ...liveConsultationMessages.value.filter((item) => !existingIds.has(item.id)),
+    ])
+  }
+  return buildFallbackConsultationMessages()
+})
+
+const consultationDockVisible = computed(() =>
+  !consultationWindowOpen.value
+  && (
+    meetingLoading.value
+    || consultationMessages.value.length > 0
+    || consultationState.value !== 'idle'
+  ),
+)
+
+const consultationDecision = computed(() => {
+  const summary = lastRun.value?.decisionSummary
+  if (summary && typeof summary === 'object') {
+    return {
+      status: summary.status || 'ready',
+      headline: sanitizeConsultationText(summary.headline || '会诊共识已生成'),
+      currentProblem: sanitizeConsultationText(summary.currentProblem || '系统已根据学生画像、作答表现和资源审核结果形成综合判断。'),
+      weakPoints: normalizeStringList(summary.weakPoints),
+      recommendedResources: normalizeStringList(summary.recommendedResources),
+      recommendedPractice: normalizeStringList(summary.recommendedPractice),
+      teacherAction: sanitizeConsultationText(summary.teacherAction || '建议教师结合资源草案和审核报告进行发布前复核。'),
+      evidenceRefs: normalizeStringList(summary.evidenceRefs),
+    }
+  }
+  const weakPointNames = weakPoints.value.map((item) => item.tagName).filter(Boolean).slice(0, 4)
+  const dimensionNames = lowestDimensions.value.map((item) => item.name).filter(Boolean)
+  return {
+    status: consultationMessages.value.length ? 'fallback' : 'empty',
+    headline: weakPointNames.length ? `优先围绕“${weakPointNames.join('、')}”完成一轮补强` : '等待生成会诊共识',
+    currentProblem: dimensionNames.length
+      ? `当前画像提示需关注 ${dimensionNames.join('、')}，建议先完成基础补强再进入综合练习。`
+      : '选择学生并生成资源后，系统会汇总会诊共识。',
+    weakPoints: weakPointNames,
+    recommendedResources: generationConfig.selectedResourceTypes.map(resourceTypeDisplayLabel),
+    recommendedPractice: ['查看知识讲解', '完成补救练习', '复盘最近错题'],
+    teacherAction: '建议教师先查看资源草案，再决定是否保存或发送给学生。',
+    evidenceRefs: buildConsultationEvidenceRefs(),
+  }
+})
+
+const consultationEvidenceItems = computed(() => {
+  const refs = consultationDecision.value.evidenceRefs || []
+  if (refs.length > 0) return refs
+  return buildConsultationEvidenceRefs()
+})
+
+const finalMeetingResult = computed(() => {
+  const messages = consultationMessages.value.filter((item) => item.agentId !== 'teacher')
+  const agentIds = [...new Set(messages.map((item) => item.agentId).filter(Boolean))]
+  const maxRound = messages
+    .map((item) => Number(item.round || 1))
+    .reduce((max, value) => Math.max(max, value), 1)
+  const finalMessages = messages
+    .filter((item) => ['report', 'qualityReview', 'consistencyReview', 'decision-agent'].includes(item.agentId))
+    .slice(-4)
+  const weakPointNames = weakPoints.value.map((item) => item.tagName).filter(Boolean).slice(0, 5)
+  const dimensionNames = lowestDimensions.value.map((item) => item.name).filter(Boolean).slice(0, 4)
+  const resourceNames = generatedResources.value.length
+    ? generatedResources.value.map((item) => item.title).filter(Boolean).slice(0, 6)
+    : consultationDecision.value.recommendedResources
+  const consensus = [
+    consultationDecision.value.currentProblem,
+    weakPointNames.length
+      ? `知识补强优先级：${weakPointNames.join('、')}，资源内容需要围绕这些薄弱点展开。`
+      : '',
+    dimensionNames.length
+      ? `能力诊断关注：${dimensionNames.join('、')}，练习设计需兼顾理解迁移、作答表现和学习参与。`
+      : '',
+    finalMessages[0]?.content ? sanitizeConsultationText(finalMessages[0].content, 260) : '',
+  ].filter(Boolean)
+  const resourcePlan = (resourceNames.length ? resourceNames : ['知识讲解视频', '补救练习', '错因复盘', '学习路径']).map((name, index) => ({
+    title: name,
+    detail: [
+      '先用讲解资源补齐概念和例题',
+      '再用专项练习验证掌握情况',
+      '最后用错因复盘和学习路径巩固迁移',
+      '教师审核后再发送给学生',
+    ][index % 4],
+  }))
+  const actionPlan = [
+    '第一步：先复盘画像证据和最近作答，确认薄弱知识点是否与当前教学目标一致。',
+    `第二步：围绕 ${weakPointNames.join('、') || '当前薄弱点'} 完成知识讲解与例题补强。`,
+    `第三步：安排 ${generationConfig.exerciseCount || 5} 道左右的补救练习，覆盖基础题、变式题和错因复盘题。`,
+    '第四步：教师检查资源是否可直接使用，确认无泛化讲解、无题目答案缺失、无知识点偏移。',
+    '第五步：发布后继续观察学生作答结果，并将新证据回流到下一轮画像和资源会诊。',
+  ]
+  const reviewPoints = [
+    '资源必须贴合画像薄弱点',
+    '题目难度要与当前能力值匹配',
+    '讲解内容避免泛泛而谈',
+    '练习题需包含答案与解析',
+    '发布前由教师最终确认',
+  ]
+  const digest = finalMessages.length
+    ? finalMessages.map((item) => ({
+      title: `${item.agentName}：${item.role}`,
+      content: sanitizeConsultationText(item.content, 360),
+    }))
+    : [{
+      title: '会诊决策摘要',
+      content: consultationDecision.value.teacherAction,
+    }]
+  return {
+    headline: consultationDecision.value.headline,
+    status: consultationDecision.value.status,
+    rounds: maxRound,
+    agentCount: agentIds.length,
+    evidenceCount: consultationEvidenceItems.value.length,
+    resourceCount: resourcePlan.length,
+    consensus,
+    resourcePlan,
+    actionPlan,
+    reviewPoints,
+    digest,
+  }
+})
+
 function isReady(agentId) {
   return isAgentReady(agentId, {
     hasStudent: Boolean(selectedStudent.value),
     completedSet: completedSet.value,
   })
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => sanitizeConsultationText(String(item || ''), 80)).filter(Boolean)
+}
+
+function sanitizeConsultationText(value, maxLength = 220) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  const blockedPatterns = [
+    /system prompt/i,
+    /developer prompt/i,
+    /严格\s*JSON/i,
+    /不要输出\s*markdown/i,
+    /字段必须包含/i,
+    /model parameters?/i,
+    /temperature/i,
+    /top_p/i,
+  ]
+  if (blockedPatterns.some((pattern) => pattern.test(text))) {
+    return '系统已将内部分析过程整理为可读学习建议。'
+  }
+  if (!maxLength || text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}...`
+}
+
+function normalizeConsultationMessage(item, index) {
+  const agentId = item.agentId || `agent-${index}`
+  const localAgent = agents[agentId] || {}
+  const agentName = preferReadableText(item.agentName, localAgent.cnTitle || localAgent.title || '学习诊断智能体')
+  const role = preferReadableText(item.role, consultationRole(agentId))
+  return {
+    id: item.id || `${item.agentId || 'agent'}-${item.turnIndex ?? index}-${index}`,
+    turnIndex: Number(item.turnIndex ?? index + 1),
+    round: item.round || 1,
+    agentId,
+    agentName: sanitizeConsultationText(agentName, 40),
+    replyToAgentId: item.replyToAgentId || '',
+    replyToAgentName: sanitizeConsultationText(preferReadableText(item.replyToAgentName, agents[item.replyToAgentId]?.cnTitle || ''), 40),
+    role: sanitizeConsultationText(role, 40),
+    content: sanitizeConsultationText(item.content || item.summary || '已完成本轮学习诊断。', 0),
+    evidenceRefs: normalizeStringList(item.evidenceRefs),
+    createdAt: sanitizeConsultationText(item.createdAt || '', 40),
+    status: item.status || '',
+    modelName: sanitizeConsultationText(item.modelName || '', 40),
+    llmCallId: item.llmCallId || null,
+  }
+}
+
+function preferReadableText(value, fallback) {
+  const text = String(value || '').trim()
+  if (!text) return fallback
+  if (/[�]|[鏅璧鐭鑳涓绋绾]/.test(text)) return fallback
+  return text
+}
+
+function sortConsultationMessages(messages) {
+  return [...messages].sort((a, b) => {
+    const aTurn = Number(a.turnIndex ?? 9999)
+    const bTurn = Number(b.turnIndex ?? 9999)
+    if (aTurn !== bTurn) return aTurn - bTurn
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+  })
+}
+
+watch(consultationMessages, () => {
+  scrollConsultationToBottom()
+}, { flush: 'post' })
+
+function scrollConsultationToBottom() {
+  nextTick(() => {
+    const thread = consultationThreadRef.value
+    if (!thread) return
+    thread.scrollTop = thread.scrollHeight
+  })
+}
+
+async function openConsultationWindow(autoStart = false) {
+  consultationWindowOpen.value = true
+  await nextTick()
+  scrollConsultationToBottom()
+  if (autoStart && !meetingLoading.value) {
+    await startConsultationMeeting()
+  }
+}
+
+function closeConsultationWindow() {
+  consultationWindowOpen.value = false
+}
+
+function buildFallbackConsultationMessages() {
+  if (!lastRun.value && generatedResources.value.length === 0) return []
+  const traces = Array.isArray(lastRun.value?.agentTrace) ? lastRun.value.agentTrace : []
+  const traceMessages = traces
+    .filter((item) => item?.summary || item?.agentName)
+    .slice(0, 6)
+    .map((item, index) => normalizeConsultationMessage({
+      round: 1,
+      agentId: item.agentId || `trace-${index}`,
+      agentName: item.agentName || '学习诊断智能体',
+      role: item.status === 'failed' ? '需要复核' : '流程意见',
+      content: item.summary || '该智能体已完成当前流程节点。',
+      evidenceRefs: buildConsultationEvidenceRefs(),
+    }, index))
+  if (traceMessages.length > 0) return traceMessages
+  return [
+    normalizeConsultationMessage({
+      round: 1,
+      agentId: 'decision-agent',
+      agentName: '会诊决策智能体',
+      role: '最终共识',
+      content: `已生成 ${generatedResources.value.length} 个个性化资源草案，建议教师结合画像薄弱点进行发布前复核。`,
+      evidenceRefs: buildConsultationEvidenceRefs(),
+    }, 0),
+  ]
+}
+
+function buildConsultationEvidenceRefs(agentId = '') {
+  const refs = []
+  const student = selectedStudent.value
+  if (student?.stageName) refs.push(`${student.stageName}画像`)
+  if (student?.abilityScore != null) refs.push(`能力值 ${student.abilityScore}`)
+  if (student?.completedAttemptCount != null) refs.push(`完成作答 ${student.completedAttemptCount} 次`)
+  const weakPointNames = weakPoints.value.map((item) => item.tagName).filter(Boolean).slice(0, 4)
+  if (weakPointNames.length) refs.push(`薄弱知识点：${weakPointNames.join('、')}`)
+  if (generatedResources.value.length) refs.push(`资源草案 ${generatedResources.value.length} 个`)
+  const agentEvidence = {
+    knowledge: weakPointNames.length ? [`知识点：${weakPointNames.join('、')}`] : [],
+    ability: lowestDimensions.value.map((item) => `${item.name} ${item.score ?? '-'}分`).slice(0, 3),
+    behavior: student?.suggestions?.length ? student.suggestions.slice(0, 2) : [],
+    resource: generationConfig.selectedResourceTypes.map(resourceTypeDisplayLabel),
+    practice: [`练习数量 ${generationConfig.exerciseCount} 题`, generationConfig.difficulty === 'basic' ? '基础补弱' : generationConfig.difficulty === 'comprehensive' ? '综合迁移' : '提升训练'],
+    report: generatedResources.value.length ? [`资源草案 ${generatedResources.value.length} 个`] : [],
+    qualityReview: ['完整性', '可用性', '难度适配'],
+    consistencyReview: ['画像一致', '主题一致', '课程目标一致'],
+  }
+  return [...new Set([...(agentEvidence[agentId] || []), ...refs])].slice(0, 6)
+}
+
+function resourceTypeDisplayLabel(type) {
+  const labels = {
+    knowledge_video: '知识讲解视频',
+    remedial_exercise: '补救练习',
+    knowledge_handout: '知识点讲义',
+    error_reflection: '错因复盘',
+    learning_path: '学习路径',
+  }
+  return labels[type] || '个性化学习资源'
 }
 
 function isCompleted(agentId) {
@@ -303,6 +603,441 @@ function addLog(agentId, content) {
   persistLogs()
 }
 
+function addConsultationMessage(agentId, content, options = {}) {
+  const agent = agents[agentId] || {}
+  const message = normalizeConsultationMessage({
+    id: options.id,
+    turnIndex: options.turnIndex,
+    round: options.round || 1,
+    agentId,
+    agentName: options.agentName || agent.cnTitle || agent.title || '学习诊断智能体',
+    replyToAgentId: options.replyToAgentId || '',
+    replyToAgentName: options.replyToAgentName || '',
+    role: options.role || consultationRole(agentId),
+    content: options.content || content,
+    evidenceRefs: options.evidenceRefs || buildConsultationEvidenceRefs(agentId),
+    createdAt: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    status: options.status || '',
+    modelName: options.modelName || '',
+    llmCallId: options.llmCallId || null,
+  }, liveConsultationMessages.value.length)
+  const replaceId = options.replaceId || message.id
+  const existingIndex = liveConsultationMessages.value.findIndex((item) => item.id === replaceId)
+  if (existingIndex >= 0) {
+    liveConsultationMessages.value = liveConsultationMessages.value.map((item, index) => (index === existingIndex ? message : item))
+  } else {
+    liveConsultationMessages.value = [...liveConsultationMessages.value, message]
+  }
+  activeConsultationTab.value = 'discussion'
+  return message
+}
+
+async function addModelConsultationMessage(agentId, fallbackOutput) {
+  if (meetingLoading.value || liveConsultationMessages.value.length > 0) return
+  if (['coordinator', 'knowledge', 'ability'].includes(agentId)) {
+    await startConsultationMeeting({ silent: true })
+  }
+}
+
+async function startConsultationMeeting(options = {}) {
+  const student = selectedStudent.value
+  activeConsultationTab.value = 'discussion'
+  consultationWindowOpen.value = true
+  if (!student) {
+    ElMessage.warning('请先选择学生')
+    return
+  }
+  meetingPlaybackToken.value += 1
+  const token = meetingPlaybackToken.value
+  liveConsultationMessages.value = []
+  pendingConsultationMessages.value = []
+  completedAgents.value = []
+  generatedResources.value = []
+  lastRun.value = null
+  activeAgentId.value = ''
+  flowingEdges.value = []
+  pausedAgentId.value = ''
+  followUpText.value = ''
+  consultationState.value = 'running'
+  meetingLoading.value = true
+  const pendingId = `meeting-pending-${Date.now()}`
+  addConsultationMessage('coordinator', '', {
+    id: pendingId,
+    content: '正在组织多智能体会诊对话，知识、能力、错因、资源和审核智能体将依次回应前一位观点...',
+    role: '会诊主持',
+    status: 'running',
+    evidenceRefs: buildConsultationEvidenceRefs('coordinator'),
+  })
+  persistWorkspace()
+  try {
+    const messages = await teacherApi.discussAgentMeeting({
+      studentId: Number(student.studentId),
+      stage: stage.value,
+      resourceTypes: generationConfig.selectedResourceTypes?.length ? generationConfig.selectedResourceTypes : defaultResourceTypes,
+      selectedResourceTypes: generationConfig.selectedResourceTypes?.length ? generationConfig.selectedResourceTypes : defaultResourceTypes,
+      generationScope: generationConfig.generationScope,
+      classId: generationConfig.classId,
+      difficulty: generationConfig.difficulty,
+      exerciseCount: generationConfig.exerciseCount,
+      publishMode: generationConfig.publishMode,
+      selectedWeakPoints: generationConfig.selectedWeakPoints,
+      providerKey: defaultProviderKey.value || undefined,
+      agentProviderKeys: buildAgentProviderPayload(agentOverrides),
+      teacherRequirement: teacherRequirement.value,
+      discussionMessages: [],
+    })
+    const normalized = Array.isArray(messages)
+      ? messages.map((item, index) => normalizeConsultationMessage(item, index))
+      : []
+    if (normalized.length === 0) {
+      addConsultationMessage('coordinator', '', {
+        replaceId: pendingId,
+        content: '会诊暂未返回有效对话，请稍后重试或先完成单个智能体流程。',
+        role: '会诊主持',
+        status: 'fallback',
+      })
+    } else {
+      liveConsultationMessages.value = []
+      await playConsultationMessages(normalized, { token, reset: false })
+      if (!options.silent) ElMessage.success('多智能体会诊对话已生成')
+    }
+  } catch (error) {
+    liveConsultationMessages.value = []
+    await playConsultationMessages(buildLocalMeetingMessages(error.message || '会诊接口暂不可用'), { token, reset: false })
+    if (!options.silent) {
+      ElMessage.warning('会诊接口暂不可用，已展示待接入模型的对话样例；重启后端后可使用真实模型会诊。')
+    }
+  } finally {
+    if (!componentMounted && consultationState.value === 'running' && pendingConsultationMessages.value.length > 0) {
+      persistWorkspace()
+      return
+    }
+    if (consultationState.value !== 'paused_for_teacher') {
+      meetingLoading.value = false
+      consultationState.value = generatedResources.value.length ? 'completed' : 'idle'
+      activeAgentId.value = ''
+      flowingEdges.value = []
+    }
+    persistWorkspace()
+  }
+}
+
+async function playConsultationMessages(messages, options = {}) {
+  const token = options.token ?? meetingPlaybackToken.value
+  const rows = sortConsultationMessages(messages)
+  if (options.replacePending !== false) {
+    pendingConsultationMessages.value = rows
+  }
+  persistWorkspace()
+  for (const message of [...pendingConsultationMessages.value]) {
+    if (token !== meetingPlaybackToken.value) return
+    if (consultationState.value === 'paused_for_teacher') return
+    await playConsultationStep(message, token)
+  }
+}
+
+async function playConsultationStep(message, token) {
+  const agentId = message.agentId
+  activeAgentId.value = agentId
+  flowingEdges.value = incomingEdgesForAgent(agentId, message.replyToAgentId)
+  await nextTick()
+  await Promise.all([
+    animateNode(agentId),
+    animateEdges(flowingEdges.value),
+  ])
+  if (token !== meetingPlaybackToken.value || consultationState.value === 'paused_for_teacher') return
+  await new Promise(resolve => setTimeout(resolve, 420))
+  if (token !== meetingPlaybackToken.value || consultationState.value === 'paused_for_teacher') return
+  liveConsultationMessages.value = sortConsultationMessages([
+    ...liveConsultationMessages.value.filter((item) => item.id !== message.id),
+    message,
+  ])
+  pendingConsultationMessages.value = pendingConsultationMessages.value.filter((item) => item.id !== message.id)
+  if (!completedAgents.value.includes(agentId)) completedAgents.value.push(agentId)
+  agentOutputs[agentId] = message.content
+  addLog(agentId, message.content)
+  if (agentId === 'consistencyReview') {
+    await generateResourcesFromConsultation()
+  }
+  activeAgentId.value = ''
+  flowingEdges.value = []
+  persistWorkspace()
+}
+
+function incomingEdgesForAgent(agentId, replyToAgentId = '') {
+  if (!agentId || agentId === 'preprocess') return []
+  const incoming = edgesBase.filter((edge) => edge.to === agentId)
+  if (incoming.length) return incoming
+  if (replyToAgentId) {
+    return edgesBase.filter((edge) => edge.from === replyToAgentId && edge.to === agentId)
+  }
+  return []
+}
+
+async function generateResourcesFromConsultation() {
+  if (generatedResources.value.length > 0 && consultationState.value !== 'refining') return
+  if (String(selectedStudent.value?.studentId).startsWith('DEMO')) {
+    generatedResources.value = normalizeGeneratedCards(buildGeneratedResources(), resourceCardContext())
+  } else {
+    await generateAgentResources()
+  }
+  await nextTick()
+  animateGeneratedCards()
+}
+
+function pauseConsultationForAgent(agentId) {
+  meetingPlaybackToken.value += 1
+  consultationWindowOpen.value = true
+  consultationState.value = 'paused_for_teacher'
+  meetingLoading.value = false
+  pausedAgentId.value = agentId
+  followUpText.value = ''
+  activeAgentId.value = agentId
+  flowingEdges.value = []
+  activeConsultationTab.value = 'discussion'
+  ElMessage.info(`已暂停会诊，可补充或追问 ${agentDisplayName(agentId)}`)
+}
+
+function openFollowUpForAgent(agentId) {
+  consultationWindowOpen.value = true
+  pausedAgentId.value = agentId
+  followUpText.value = ''
+  consultationState.value = generatedResources.value.length ? 'refining' : 'paused_for_teacher'
+  activeConsultationTab.value = 'discussion'
+}
+
+function cancelFollowUp() {
+  pausedAgentId.value = ''
+  followUpText.value = ''
+  if (consultationState.value === 'paused_for_teacher' || consultationState.value === 'refining') {
+    consultationState.value = generatedResources.value.length ? 'completed' : 'idle'
+  }
+}
+
+async function submitAgentFollowUp() {
+  const agentId = pausedAgentId.value
+  const feedback = followUpText.value.trim()
+  consultationWindowOpen.value = true
+  if (!agentId) return
+  if (!feedback) {
+    ElMessage.warning('请先输入要补充或追问的内容')
+    return
+  }
+  const teacherMessage = normalizeConsultationMessage({
+    id: `teacher-followup-${Date.now()}`,
+    turnIndex: nextConsultationTurnIndex(),
+    round: currentConsultationRound(),
+    agentId: 'teacher',
+    agentName: '教师补充',
+    replyToAgentId: agentId,
+    replyToAgentName: agentDisplayName(agentId),
+    role: '追问 / 补充',
+    content: feedback,
+    evidenceRefs: [`追问对象：${agentDisplayName(agentId)}`],
+    createdAt: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    status: 'success',
+  }, liveConsultationMessages.value.length)
+  liveConsultationMessages.value = sortConsultationMessages([...liveConsultationMessages.value, teacherMessage])
+  const startAgentId = agentId
+  pausedAgentId.value = ''
+  followUpText.value = ''
+  pendingConsultationMessages.value = []
+  consultationState.value = generatedResources.value.length ? 'refining' : 'resuming'
+  meetingLoading.value = true
+  meetingPlaybackToken.value += 1
+  const token = meetingPlaybackToken.value
+  try {
+    const messages = await teacherApi.discussAgentMeeting({
+      studentId: Number(selectedStudent.value.studentId),
+      stage: stage.value,
+      resourceTypes: generationConfig.selectedResourceTypes?.length ? generationConfig.selectedResourceTypes : defaultResourceTypes,
+      selectedResourceTypes: generationConfig.selectedResourceTypes?.length ? generationConfig.selectedResourceTypes : defaultResourceTypes,
+      generationScope: generationConfig.generationScope,
+      classId: generationConfig.classId,
+      difficulty: generationConfig.difficulty,
+      exerciseCount: generationConfig.exerciseCount,
+      publishMode: generationConfig.publishMode,
+      selectedWeakPoints: generationConfig.selectedWeakPoints,
+      providerKey: defaultProviderKey.value || undefined,
+      agentProviderKeys: buildAgentProviderPayload(agentOverrides),
+      teacherRequirement: teacherRequirement.value,
+      feedback,
+      agentId: startAgentId,
+      discussionMessages: liveConsultationMessages.value.filter((item) => item.status !== 'running'),
+    })
+    const currentMaxTurn = nextConsultationTurnIndex() - 1
+    const normalized = Array.isArray(messages)
+      ? messages.map((item, index) => normalizeConsultationMessage(item, index)).filter((item) => Number(item.turnIndex || 0) > currentMaxTurn)
+      : []
+    const rows = normalized.length ? normalized : buildLocalMeetingMessages('', startAgentId, feedback)
+    await playConsultationMessages(rows, { token, reset: false })
+  } catch (error) {
+    await playConsultationMessages(buildLocalMeetingMessages(error.message || '会诊接口暂不可用', startAgentId, feedback), { token, reset: false })
+    ElMessage.warning('会诊接口暂不可用，已用本地会诊流继续演示。')
+  } finally {
+    if (!componentMounted && ['resuming', 'refining'].includes(consultationState.value) && pendingConsultationMessages.value.length > 0) {
+      persistWorkspace()
+      return
+    }
+    if (consultationState.value !== 'paused_for_teacher') {
+      meetingLoading.value = false
+      consultationState.value = 'completed'
+      activeAgentId.value = ''
+      flowingEdges.value = []
+    }
+    persistWorkspace()
+  }
+}
+
+function nextConsultationTurnIndex() {
+  return liveConsultationMessages.value
+    .map((item) => Number(item.turnIndex || 0))
+    .reduce((max, value) => Math.max(max, value), 0) + 1
+}
+
+function currentConsultationRound() {
+  return liveConsultationMessages.value
+    .map((item) => Number(item.round || 1))
+    .reduce((max, value) => Math.max(max, value), 1)
+}
+
+function agentDisplayName(agentId) {
+  if (agentId === 'teacher') return '教师'
+  const agent = agents[agentId] || {}
+  return preferReadableText(agent.cnTitle || agent.title, consultationRole(agentId))
+}
+
+function buildLocalMeetingMessages(reason = '', startAgentId = '', feedback = '') {
+  const weakPointNames = weakPoints.value.map((item) => item.tagName).filter(Boolean).slice(0, 4)
+  const dimensionNames = lowestDimensions.value.map((item) => item.name).filter(Boolean).slice(0, 3)
+  const weakText = weakPointNames.length ? weakPointNames.join('、') : '当前薄弱知识点'
+  const dimensionText = dimensionNames.length ? dimensionNames.join('、') : '理解迁移、实践能力'
+  const resourceText = generationConfig.selectedResourceTypes.map(resourceTypeDisplayLabel).join('、') || '知识讲解、补救练习、学习路径'
+  const suffix = reason ? '（当前后端会诊接口未连接，重启后端后将由绑定模型实时生成。）' : ''
+  const rows = [
+    {
+      round: 1,
+      agentId: 'preprocess',
+      role: '证据整理',
+      content: `我先整理学生画像、作答记录和资源需求：本轮会诊重点围绕 ${weakText} 与 ${dimensionText} 展开，后续所有建议都要引用这些证据。${suffix}`,
+    },
+    {
+      round: 1,
+      agentId: 'coordinator',
+      replyToAgentId: 'preprocess',
+      role: '会诊主持',
+      content: `我回应预处理证据：大家围绕 ${weakText} 和 ${dimensionText} 判断学生卡在哪里，再共同形成资源方案。`,
+    },
+    {
+      round: 1,
+      agentId: 'knowledge',
+      replyToAgentId: 'coordinator',
+      role: '知识诊断',
+      content: `我回应协调智能体：知识层面应先补 ${weakText}，资源不能泛讲，要把概念、例题和易错点串成一条学习链。`,
+    },
+    {
+      round: 1,
+      agentId: 'ability',
+      replyToAgentId: 'knowledge',
+      role: '能力评估',
+      content: `我补充知识诊断：这些薄弱点会继续影响 ${dimensionText}，所以资源后面必须接变式练习，验证学生能否迁移。`,
+    },
+    {
+      round: 1,
+      agentId: 'behavior',
+      replyToAgentId: 'ability',
+      role: '错因复盘',
+      content: '我对能力评估再补一层：如果学生只看讲解不复盘错因，仍可能在边界条件、输入输出和变量状态上反复出错。',
+    },
+    {
+      round: 2,
+      agentId: 'resource',
+      replyToAgentId: 'behavior',
+      role: '资源建议',
+      content: `我基于前面讨论提出资源包：先给 ${weakText} 的讲解材料，再配补救练习和学习路径，资源类型建议为 ${resourceText}。`,
+    },
+    {
+      round: 2,
+      agentId: 'practice',
+      replyToAgentId: 'resource',
+      role: '练习设计',
+      content: '我回应资源方案：练习分三层，先基础识别，再变式迁移，最后用错因复盘题让学生写出判断依据。',
+    },
+    {
+      round: 2,
+      agentId: 'report',
+      replyToAgentId: 'practice',
+      role: '阶段汇总',
+      content: '我汇总当前方案：诊断结论、资源包和练习梯度已经形成，下一步交给审核智能体检查可用性与一致性。',
+    },
+    {
+      round: 3,
+      agentId: 'qualityReview',
+      replyToAgentId: 'report',
+      role: '质量审核',
+      content: '我审核练习方案：资源可以采用，但题干、答案、解析和知识点标签必须完整，视频或讲义要能直接给学生使用。',
+    },
+    {
+      round: 3,
+      agentId: 'consistencyReview',
+      replyToAgentId: 'qualityReview',
+      role: '一致性审核',
+      content: `我回应审核意见：资源方向与画像证据一致，重点仍应锁定 ${weakText}，避免生成过宽泛的综合材料。`,
+    },
+  ]
+  const startIndex = startAgentId ? Math.max(0, rows.findIndex((item) => item.agentId === startAgentId)) : 0
+  const selectedRows = rows.slice(startIndex >= 0 ? startIndex : 0)
+  const baseTurn = nextConsultationTurnIndex()
+  return selectedRows.map((item, index) => normalizeConsultationMessage({
+    id: `local-meeting-${Date.now()}-${index + 1}-${item.agentId}`,
+    turnIndex: baseTurn + index,
+    agentName: agents[item.agentId]?.cnTitle || agents[item.agentId]?.title || consultationRole(item.agentId),
+    replyToAgentName: item.replyToAgentId ? (agents[item.replyToAgentId]?.cnTitle || agents[item.replyToAgentId]?.title || consultationRole(item.replyToAgentId)) : '',
+    evidenceRefs: buildConsultationEvidenceRefs(item.agentId),
+    status: 'fallback',
+    createdAt: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    ...item,
+    content: feedback && index === 0 ? `${item.content} 我已纳入教师补充：“${feedback}”。` : item.content,
+  }, index))
+}
+
+function consultationRole(agentId) {
+  const roles = {
+    preprocess: '证据整理',
+    coordinator: '会诊主持',
+    knowledge: '知识诊断',
+    ability: '能力评估',
+    behavior: '错因复盘',
+    resource: '资源建议',
+    practice: '练习设计',
+    report: '最终共识',
+    qualityReview: '质量审核',
+    consistencyReview: '一致性审核',
+  }
+  return roles[agentId] || '学习诊断'
+}
+
+function consultationSpeech(agentId, output) {
+  const weakPointNames = weakPoints.value.map((item) => item.tagName).filter(Boolean).slice(0, 4)
+  const dimensionNames = lowestDimensions.value.map((item) => item.name).filter(Boolean).slice(0, 3)
+  const weakText = weakPointNames.length ? weakPointNames.join('、') : '当前薄弱知识点'
+  const dimensionText = dimensionNames.length ? dimensionNames.join('、') : '当前能力短板'
+  const resourceText = generationConfig.selectedResourceTypes.map(resourceTypeDisplayLabel).join('、') || '知识讲解、补救练习、学习路径'
+  const speeches = {
+    preprocess: `我已读取并整理学生画像证据，本轮会诊将围绕 ${weakText} 和 ${dimensionText} 展开。`,
+    coordinator: '我将本轮会诊分配给知识诊断、能力评估、错因复盘、资源生成和审核智能体，先形成意见，再汇总为教师可采纳建议。',
+    knowledge: `从知识掌握角度看，优先补强 ${weakText}。资源内容需要直接讲清概念、例题和易错点。`,
+    ability: `从能力维度看，当前重点是 ${dimensionText}。建议先完成基础识别题，再过渡到变式练习和综合任务。`,
+    behavior: '从错题和学习轨迹看，学生需要把错误原因写清楚，尤其是变量状态、边界条件和输入输出依据。',
+    resource: `我建议本轮生成 ${resourceText}，并把每个资源都绑定到画像薄弱点，避免泛泛讲解。`,
+    practice: `练习设计建议控制在 ${generationConfig.exerciseCount} 题左右，包含基础题、变式题和错因复盘题。`,
+    report: `会诊共识已形成：先围绕 ${weakText} 完成资源补强，再由教师审核后保存或发送给学生。`,
+    qualityReview: '我会重点检查资源是否完整、可直接使用、难度是否适合当前学生。',
+    consistencyReview: '我会重点检查资源主题是否与学生画像、薄弱点和课程目标保持一致。',
+  }
+  return speeches[agentId] || output
+}
+
 function persistLogs() {
   persistActivityLogs(logs.value)
 }
@@ -329,15 +1064,22 @@ function resetOutputs() {
 
 function resetFlow(options = {}) {
   const preserveGeneratedResources = options.preserveGeneratedResources === true
+  meetingPlaybackToken.value += 1
   completedAgents.value = []
   activeAgentId.value = ''
   flowingEdges.value = []
   executionStopped.value = false
+  meetingLoading.value = false
+  consultationState.value = 'idle'
+  pausedAgentId.value = ''
+  followUpText.value = ''
   candidateResources.value = []
   if (!preserveGeneratedResources) {
     generatedResources.value = []
   }
   lastRun.value = null
+  liveConsultationMessages.value = []
+  pendingConsultationMessages.value = []
   revisionDraft.value = null
   revisionFeedback.value = ''
   resetOutputs()
@@ -405,12 +1147,19 @@ function persistWorkspace() {
     candidateResources: candidateResources.value,
     generatedResources: generatedResources.value,
     lastRun: lastRun.value,
+    liveConsultationMessages: liveConsultationMessages.value,
+    pendingConsultationMessages: pendingConsultationMessages.value,
+    consultationState: consultationState.value,
+    pausedAgentId: pausedAgentId.value,
     teacherRequirement: teacherRequirement.value,
     generationConfig: { ...generationConfig },
     agentOutputs,
     generationTaskId: generationTaskId.value,
     generationTaskStatus: generationTaskStatus.value,
     generationTaskMessage: generationTaskMessage.value,
+  }))
+  window.dispatchEvent(new CustomEvent('teacher-agent-resource-workspace-updated', {
+    detail: { source: workspaceEventSource },
   }))
 }
 
@@ -426,6 +1175,13 @@ function restoreWorkspace() {
     candidateResources.value = Array.isArray(saved.candidateResources) ? saved.candidateResources : []
     generatedResources.value = normalizeGeneratedCards(saved.generatedResources, resourceCardContext())
     lastRun.value = saved.lastRun || null
+    liveConsultationMessages.value = Array.isArray(saved.liveConsultationMessages) ? saved.liveConsultationMessages : []
+    pendingConsultationMessages.value = Array.isArray(saved.pendingConsultationMessages) ? saved.pendingConsultationMessages : []
+    consultationState.value = saved.consultationState || (generatedResources.value.length ? 'completed' : 'idle')
+    if (['running', 'resuming', 'refining'].includes(consultationState.value)) {
+      meetingLoading.value = true
+    }
+    pausedAgentId.value = saved.pausedAgentId || ''
     teacherRequirement.value = saved.teacherRequirement || ''
     Object.assign(generationConfig, saved.generationConfig || {})
     Object.keys(agentOutputs).forEach((key) => {
@@ -437,6 +1193,39 @@ function restoreWorkspace() {
   } catch {
     // ignore
   }
+}
+
+async function resumePendingConsultationPlayback() {
+  if (!pendingConsultationMessages.value.length) return
+  if (!['running', 'resuming', 'refining'].includes(consultationState.value)) return
+  meetingLoading.value = true
+  meetingPlaybackToken.value += 1
+  const token = meetingPlaybackToken.value
+  await playConsultationMessages(pendingConsultationMessages.value, {
+    token,
+    replacePending: false,
+  })
+  if (consultationState.value !== 'paused_for_teacher') {
+    meetingLoading.value = false
+    consultationState.value = generatedResources.value.length ? 'completed' : 'idle'
+    activeAgentId.value = ''
+    flowingEdges.value = []
+    persistWorkspace()
+  }
+}
+
+function handleWorkspaceUpdated(event) {
+  if (event?.detail?.source === workspaceEventSource) return
+  const saved = readStorageJson(AGENT_WORKSPACE_STORAGE_KEY)
+  if (!saved || !Array.isArray(saved.pendingConsultationMessages) || saved.pendingConsultationMessages.length === 0) return
+  const currentPendingIds = new Set(pendingConsultationMessages.value.map((item) => item.id))
+  const hasNewPending = saved.pendingConsultationMessages.some((item) => !currentPendingIds.has(item.id))
+  if (!hasNewPending) return
+  liveConsultationMessages.value = Array.isArray(saved.liveConsultationMessages) ? saved.liveConsultationMessages : liveConsultationMessages.value
+  pendingConsultationMessages.value = saved.pendingConsultationMessages
+  consultationState.value = saved.consultationState || 'running'
+  meetingLoading.value = true
+  resumePendingConsultationPlayback()
 }
 
 function loadDemoData(showMessage = true) {
@@ -576,6 +1365,10 @@ function resourceCardContext() {
     weakPoints: weakPoints.value,
     selectedStudentId: selectedStudentId.value,
     abilityGaps: lowestDimensions.value,
+    generationScope: generationConfig.generationScope,
+    exerciseCount: generationConfig.exerciseCount,
+    difficulty: generationConfig.difficulty,
+    teacherRequirement: teacherRequirement.value,
   }
 }
 
@@ -893,6 +1686,7 @@ async function completeAgent(agentId) {
   if (output) {
     agentOutputs[agentId] = output
     addLog(agentId, output)
+    await addModelConsultationMessage(agentId, output)
   }
   persistWorkspace()
   await nextTick()
@@ -1120,6 +1914,8 @@ watch(generatedResources, (rows) => {
 }, { deep: true })
 
 onMounted(async () => {
+  componentMounted = true
+  window.addEventListener('teacher-agent-resource-workspace-updated', handleWorkspaceUpdated)
   restoreWorkspace()
   restoreLogs()
   if (rootRef.value) {
@@ -1134,6 +1930,7 @@ onMounted(async () => {
     syncGeneratedOutputs()
   }
   restoreGenerationTask()
+  await resumePendingConsultationPlayback()
   videoTimer = window.setInterval(() => {
     generatedResources.value.forEach((card) => {
       const state = videoPlayback[card.id]
@@ -1143,6 +1940,10 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  componentMounted = false
+  meetingPlaybackToken.value += 1
+  persistWorkspace()
+  window.removeEventListener('teacher-agent-resource-workspace-updated', handleWorkspaceUpdated)
   stopTaskPolling()
   if (videoTimer) window.clearInterval(videoTimer)
   ctx?.revert()
@@ -1182,6 +1983,16 @@ onUnmounted(() => {
       <el-button type="primary" :icon="Search" @click="loadStudents">查询画像</el-button>
       <el-button :icon="Setting" :loading="providerLoading" @click="providerDrawerVisible = true">模型配置</el-button>
       <el-button :icon="UserFilled" @click="loadDemoData()">载入演示数据</el-button>
+      <el-button
+        type="success"
+        plain
+        :icon="Finished"
+        :loading="meetingLoading"
+        :disabled="!selectedStudent || meetingLoading"
+        @click="openConsultationWindow(true)"
+      >
+        开始会诊
+      </el-button>
       <el-button
         v-if="generationTaskId && ['queued', 'running'].includes(generationTaskStatus)"
         type="danger"
@@ -1363,6 +2174,160 @@ onUnmounted(() => {
         </ul>
       </div>
 
+      <div v-if="false" class="consultation-panel">
+        <div class="section-title">
+          <div class="section-title-main">
+            <h2>多智能体会诊讨论</h2>
+            <span>{{ consultationMessages.length }} 条对话</span>
+          </div>
+          <div class="section-title-actions">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :loading="meetingLoading"
+              :disabled="!selectedStudent || meetingLoading"
+              @click="startConsultationMeeting"
+            >
+              {{ consultationState === 'completed' ? '重新会诊' : '开始会诊' }}
+            </el-button>
+            <el-tag :type="consultationDecision.status === 'ready' ? 'success' : 'warning'" effect="plain" round>
+              {{
+                consultationState === 'running' || consultationState === 'resuming'
+                  ? '自动会诊中'
+                  : consultationState === 'paused_for_teacher'
+                    ? '等待教师补充'
+                    : consultationState === 'refining'
+                      ? '二次优化'
+                      : consultationDecision.status === 'ready'
+                        ? '会诊已生成'
+                        : liveConsultationMessages.length ? '实时会诊' : '等待会诊'
+              }}
+            </el-tag>
+          </div>
+        </div>
+        <el-tabs v-model="activeConsultationTab" class="consultation-tabs">
+          <el-tab-pane label="会诊讨论" name="discussion">
+            <el-empty v-if="consultationMessages.length === 0" description="点击“开始会诊对话”后展示智能体之间的讨论过程" :image-size="86" />
+            <div v-else ref="consultationThreadRef" class="consultation-thread">
+              <article
+                v-for="message in consultationMessages"
+                :key="message.id"
+                class="consultation-message"
+                :class="{ 'is-teacher': message.agentId === 'teacher', 'is-decision': message.agentId === 'decision-agent' || message.agentId === 'report', 'is-running': message.status === 'running', 'is-fallback': message.status === 'fallback' }"
+              >
+                <div class="consultation-avatar">{{ message.agentId === 'decision-agent' || message.agentId === 'report' ? '会' : message.agentName.slice(0, 1) }}</div>
+                <div class="consultation-bubble">
+                  <div class="consultation-message-head">
+                    <div>
+                      <strong>{{ message.agentName }}</strong>
+                      <em>{{ message.role }}</em>
+                      <small v-if="message.replyToAgentName" class="consultation-reply">回应 {{ message.replyToAgentName }}</small>
+                    </div>
+                    <span>
+                      第 {{ message.round }} 轮{{ message.createdAt ? ` · ${message.createdAt}` : '' }}
+                      {{ message.status === 'running' ? ' · 模型生成中' : message.modelName ? ` · ${message.modelName}` : '' }}
+                    </span>
+                  </div>
+                  <p>{{ message.content }}</p>
+                  <div v-if="message.evidenceRefs.length" class="consultation-tags">
+                    <el-tag v-for="item in message.evidenceRefs" :key="`${message.id}-${item}`" size="small" round>
+                      {{ item }}
+                    </el-tag>
+                    <el-tag v-if="message.llmCallId" size="small" type="info" round>调用 {{ message.llmCallId }}</el-tag>
+                    <el-tag v-if="message.status === 'fallback'" size="small" type="warning" round>待复核</el-tag>
+                  </div>
+                </div>
+              </article>
+            </div>
+            <div v-if="pausedAgentId" class="consultation-followup">
+              <div class="followup-head">
+                <strong>{{ consultationState === 'refining' ? '二次追问' : '暂停后补充' }}：{{ agentDisplayName(pausedAgentId) }}</strong>
+                <span>提交后将从该智能体开始，继续让后续智能体讨论并更新资源方案。</span>
+              </div>
+              <el-input
+                v-model="followUpText"
+                type="textarea"
+                :rows="3"
+                maxlength="500"
+                show-word-limit
+                resize="none"
+                :placeholder="`请输入对 ${agentDisplayName(pausedAgentId)} 的补充或追问，例如：把数组越界和字符串结束符讲得更细。`"
+                @keydown.ctrl.enter.prevent="submitAgentFollowUp"
+              />
+              <div class="followup-actions">
+                <el-button @click="cancelFollowUp">取消</el-button>
+                <el-button type="primary" :loading="meetingLoading" @click="submitAgentFollowUp">提交并继续会诊</el-button>
+              </div>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="画像证据" name="evidence">
+            <div class="evidence-stack">
+              <div v-for="item in consultationEvidenceItems" :key="item" class="evidence-chip">
+                <span></span>
+                <strong>{{ item }}</strong>
+              </div>
+              <div v-if="teacherRequirement" class="evidence-chip is-teacher">
+                <span></span>
+                <strong>教师要求：{{ teacherRequirement }}</strong>
+              </div>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="会议结果" name="decision">
+            <div class="meeting-result-card">
+              <div class="meeting-result-hero">
+                <el-tag type="success" effect="dark" round>最终会议结果</el-tag>
+                <h3>{{ finalMeetingResult.headline }}</h3>
+                <p>基于 {{ finalMeetingResult.rounds }} 轮、{{ finalMeetingResult.agentCount }} 个智能体的会诊意见，系统已将知识诊断、能力评估、资源生成和审核意见整理为可执行方案。</p>
+                <div class="meeting-result-stats">
+                  <span>{{ finalMeetingResult.evidenceCount }} 条依据</span>
+                  <span>{{ finalMeetingResult.resourceCount }} 类资源</span>
+                  <span>{{ finalMeetingResult.status === 'ready' ? '已形成共识' : '待教师复核' }}</span>
+                </div>
+              </div>
+              <section class="meeting-result-section">
+                <h4>一、最终共识</h4>
+                <ul>
+                  <li v-for="item in finalMeetingResult.consensus" :key="item">{{ item }}</li>
+                </ul>
+              </section>
+              <section class="meeting-result-section">
+                <h4>二、个性化资源方案</h4>
+                <div class="meeting-resource-plan">
+                  <article v-for="item in finalMeetingResult.resourcePlan" :key="item.title">
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ item.detail }}</span>
+                  </article>
+                </div>
+              </section>
+              <section class="meeting-result-section">
+                <h4>三、执行路径</h4>
+                <ol>
+                  <li v-for="item in finalMeetingResult.actionPlan" :key="item">{{ item }}</li>
+                </ol>
+              </section>
+              <section class="meeting-result-section">
+                <h4>四、审核与复核点</h4>
+                <div class="meeting-review-tags">
+                  <el-tag v-for="item in finalMeetingResult.reviewPoints" :key="item" type="success" effect="plain" round>
+                    {{ item }}
+                  </el-tag>
+                </div>
+              </section>
+              <section class="meeting-result-section">
+                <h4>五、会议整理摘要</h4>
+                <div class="meeting-digest-list">
+                  <article v-for="item in finalMeetingResult.digest" :key="item.title">
+                    <strong>{{ item.title }}</strong>
+                    <p>{{ item.content }}</p>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+
       <div class="resource-panel" :class="{ 'is-targeted': generatedResources.length > 0 }">
         <div class="section-title">
           <h2>个性化资源生成结果</h2>
@@ -1518,7 +2483,15 @@ onUnmounted(() => {
 
             <el-collapse class="resource-detail" accordion>
               <el-collapse-item title="资源内容" name="content">
-                <div class="resource-content">{{ card.content }}</div>
+                <div v-if="card.structuredContent?.sections?.length" class="structured-resource-content">
+                  <section v-for="section in card.structuredContent.sections" :key="section.title" class="structured-resource-section">
+                    <h4>{{ section.title }}</h4>
+                    <ul>
+                      <li v-for="item in section.items" :key="item">{{ item }}</li>
+                    </ul>
+                  </section>
+                </div>
+                <div v-else class="resource-content">{{ card.content }}</div>
               </el-collapse-item>
               <el-collapse-item title="个性化依据" name="basis">
                 <dl class="meta-list">
@@ -1605,6 +2578,218 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <button
+      v-if="consultationDockVisible"
+      type="button"
+      class="consultation-dock-tab"
+      @click="openConsultationWindow(false)"
+    >
+      <span>‹</span>
+      <strong>会诊窗口</strong>
+      <small>{{ consultationState === 'running' || meetingLoading ? '进行中' : `${consultationMessages.length} 条` }}</small>
+    </button>
+
+    <Teleport to="body">
+      <section v-if="consultationWindowOpen" class="consultation-window-shell">
+        <div class="consultation-window">
+          <header class="consultation-window-head">
+            <div>
+              <p class="eyebrow">Live Agent Consultation</p>
+              <h2>多智能体会诊讨论</h2>
+              <span>按照流程节点依次会诊；点击节点可暂停并向对应智能体补充或追问。</span>
+            </div>
+            <div class="consultation-window-actions">
+              <el-tag :type="consultationDecision.status === 'ready' ? 'success' : 'warning'" effect="plain" round>
+                {{
+                  consultationState === 'running' || consultationState === 'resuming'
+                    ? '自动会诊中'
+                    : consultationState === 'paused_for_teacher'
+                      ? '等待教师补充'
+                      : consultationState === 'refining'
+                        ? '二次优化'
+                        : consultationDecision.status === 'ready'
+                          ? '会诊已生成'
+                          : liveConsultationMessages.length ? '实时会诊' : '等待会诊'
+                }}
+              </el-tag>
+              <el-button
+                type="primary"
+                plain
+                :loading="meetingLoading"
+                :disabled="!selectedStudent || meetingLoading"
+                @click="startConsultationMeeting"
+              >
+                {{ consultationState === 'completed' ? '重新会诊' : '开始会诊' }}
+              </el-button>
+              <button type="button" class="consultation-window-close" @click="closeConsultationWindow">关闭</button>
+            </div>
+          </header>
+
+          <div class="consultation-window-body">
+            <aside class="consultation-stage-rail">
+              <div class="stage-rail-title">
+                <strong>会诊流程</strong>
+                <span>{{ completedAgents.length }} / {{ agentInfoCards.length }}</span>
+              </div>
+              <button
+                v-for="agentId in agentInfoCards"
+                :key="`window-${agentId}`"
+                type="button"
+                class="stage-agent-item"
+                :class="{ active: isActive(agentId), complete: isCompleted(agentId), paused: pausedAgentId === agentId }"
+                @click="handleAgentClick(agentId)"
+              >
+                <span>{{ agents[agentId].cnTitle.slice(0, 1) }}</span>
+                <div>
+                  <strong>{{ agents[agentId].title }}</strong>
+                  <small>{{ agents[agentId].cnTitle }}</small>
+                </div>
+              </button>
+            </aside>
+
+            <main class="consultation-window-main">
+              <div class="section-title consultation-window-title">
+                <div class="section-title-main">
+                  <h2>会诊对话</h2>
+                  <span>{{ consultationMessages.length }} 条对话</span>
+                </div>
+                <div class="section-title-actions">
+                  <el-tag v-if="pausedAgentId" type="warning" effect="plain" round>
+                    正在等待 {{ agentDisplayName(pausedAgentId) }} 的补充
+                  </el-tag>
+                  <el-tag v-else-if="meetingLoading" type="success" effect="plain" round>模型生成中</el-tag>
+                </div>
+              </div>
+
+              <el-tabs v-model="activeConsultationTab" class="consultation-tabs consultation-window-tabs">
+                <el-tab-pane label="会诊讨论" name="discussion">
+                  <el-empty v-if="consultationMessages.length === 0" description="点击“开始会诊”后展示智能体之间的连续讨论过程" :image-size="96" />
+                  <div v-else ref="consultationThreadRef" class="consultation-thread">
+                    <article
+                      v-for="message in consultationMessages"
+                      :key="message.id"
+                      class="consultation-message"
+                      :class="{ 'is-teacher': message.agentId === 'teacher', 'is-decision': message.agentId === 'decision-agent' || message.agentId === 'report', 'is-running': message.status === 'running', 'is-fallback': message.status === 'fallback' }"
+                    >
+                      <div class="consultation-avatar">{{ message.agentId === 'teacher' ? '师' : message.agentId === 'decision-agent' || message.agentId === 'report' ? '会' : message.agentName.slice(0, 1) }}</div>
+                      <div class="consultation-bubble">
+                        <div class="consultation-message-head">
+                          <div>
+                            <strong>{{ message.agentName }}</strong>
+                            <em>{{ message.role }}</em>
+                            <small v-if="message.replyToAgentName" class="consultation-reply">回应 {{ message.replyToAgentName }}</small>
+                          </div>
+                          <span>
+                            第 {{ message.round }} 轮{{ message.createdAt ? ` · ${message.createdAt}` : '' }}
+                            {{ message.status === 'running' ? ' · 模型生成中' : message.modelName ? ` · ${message.modelName}` : '' }}
+                          </span>
+                        </div>
+                        <p>{{ message.content }}</p>
+                        <div v-if="message.evidenceRefs.length" class="consultation-tags">
+                          <el-tag v-for="item in message.evidenceRefs" :key="`${message.id}-${item}`" size="small" round>
+                            {{ item }}
+                          </el-tag>
+                          <el-tag v-if="message.llmCallId" size="small" type="info" round>调用 {{ message.llmCallId }}</el-tag>
+                          <el-tag v-if="message.status === 'fallback'" size="small" type="warning" round>待复核</el-tag>
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+
+                  <div v-if="pausedAgentId" class="consultation-followup">
+                    <div class="followup-head">
+                      <strong>{{ consultationState === 'refining' ? '二次追问' : '暂停后补充' }}：{{ agentDisplayName(pausedAgentId) }}</strong>
+                      <span>提交后将从该智能体开始，继续让后续智能体讨论并更新资源方案。</span>
+                    </div>
+                    <el-input
+                      v-model="followUpText"
+                      type="textarea"
+                      :rows="3"
+                      maxlength="500"
+                      show-word-limit
+                      resize="none"
+                      :placeholder="`请输入对 ${agentDisplayName(pausedAgentId)} 的补充或追问，例如：把数组越界和字符串结束符讲得更细。`"
+                      @keydown.ctrl.enter.prevent="submitAgentFollowUp"
+                    />
+                    <div class="followup-actions">
+                      <el-button @click="cancelFollowUp">取消</el-button>
+                      <el-button type="primary" :loading="meetingLoading" @click="submitAgentFollowUp">提交并继续会诊</el-button>
+                    </div>
+                  </div>
+                </el-tab-pane>
+
+                <el-tab-pane label="画像证据" name="evidence">
+                  <div class="evidence-stack">
+                    <div v-for="item in consultationEvidenceItems" :key="item" class="evidence-chip">
+                      <span></span>
+                      <strong>{{ item }}</strong>
+                    </div>
+                    <div v-if="teacherRequirement" class="evidence-chip is-teacher">
+                      <span></span>
+                      <strong>教师要求：{{ teacherRequirement }}</strong>
+                    </div>
+                  </div>
+                </el-tab-pane>
+
+                <el-tab-pane label="会议结果" name="decision">
+                  <div class="meeting-result-card">
+                    <div class="meeting-result-hero">
+                      <el-tag type="success" effect="dark" round>最终会议结果</el-tag>
+                      <h3>{{ finalMeetingResult.headline }}</h3>
+                      <p>基于 {{ finalMeetingResult.rounds }} 轮、{{ finalMeetingResult.agentCount }} 个智能体的会诊意见，系统已将知识诊断、能力评估、资源生成和审核意见整理为可执行方案。</p>
+                      <div class="meeting-result-stats">
+                        <span>{{ finalMeetingResult.evidenceCount }} 条依据</span>
+                        <span>{{ finalMeetingResult.resourceCount }} 类资源</span>
+                        <span>{{ finalMeetingResult.status === 'ready' ? '已形成共识' : '待教师复核' }}</span>
+                      </div>
+                    </div>
+                    <section class="meeting-result-section">
+                      <h4>一、最终共识</h4>
+                      <ul>
+                        <li v-for="item in finalMeetingResult.consensus" :key="item">{{ item }}</li>
+                      </ul>
+                    </section>
+                    <section class="meeting-result-section">
+                      <h4>二、个性化资源方案</h4>
+                      <div class="meeting-resource-plan">
+                        <article v-for="item in finalMeetingResult.resourcePlan" :key="item.title">
+                          <strong>{{ item.title }}</strong>
+                          <span>{{ item.detail }}</span>
+                        </article>
+                      </div>
+                    </section>
+                    <section class="meeting-result-section">
+                      <h4>三、执行路径</h4>
+                      <ol>
+                        <li v-for="item in finalMeetingResult.actionPlan" :key="item">{{ item }}</li>
+                      </ol>
+                    </section>
+                    <section class="meeting-result-section">
+                      <h4>四、审核与复核点</h4>
+                      <div class="meeting-review-tags">
+                        <el-tag v-for="item in finalMeetingResult.reviewPoints" :key="item" type="success" effect="plain" round>
+                          {{ item }}
+                        </el-tag>
+                      </div>
+                    </section>
+                    <section class="meeting-result-section">
+                      <h4>五、会议整理摘要</h4>
+                      <div class="meeting-digest-list">
+                        <article v-for="item in finalMeetingResult.digest" :key="item.title">
+                          <strong>{{ item.title }}</strong>
+                          <p>{{ item.content }}</p>
+                        </article>
+                      </div>
+                    </section>
+                  </div>
+                </el-tab-pane>
+              </el-tabs>
+            </main>
+          </div>
+        </div>
+      </section>
+    </Teleport>
+
     <el-drawer v-model="providerDrawerVisible" title="智能体模型配置" size="420px">
       <div class="provider-drawer">
         <p class="drawer-copy">仅对接入 LLM 的智能体开放模型选择。未单独配置时，自动继承页面默认模型；页面默认模型留空时，继续跟随系统默认。</p>
@@ -1620,7 +2805,7 @@ onUnmounted(() => {
             </el-select>
           </el-form-item>
 
-          <div v-for="agentKey in Object.keys(agentOverrides)" :key="agentKey" class="provider-agent-block">
+          <div v-for="agentKey in editableAgentIds" :key="agentKey" class="provider-agent-block">
             <div class="provider-agent-head">
               <strong>{{ backendAgentLabels[agentKey] }}</strong>
               <span>{{ providerBindingMode(agentKey) }}</span>
@@ -1637,8 +2822,8 @@ onUnmounted(() => {
         </el-form>
 
         <div class="provider-drawer-note">
-          <strong>不支持配置的节点</strong>
-          <p>预处理、协调、知识定位、能力分析、资料生成、讲解生成、练习生成当前是流程或规则节点，不暴露模型选择。</p>
+          <strong>会诊模型说明</strong>
+          <p>每个智能体都可以单独绑定模型。未单独配置时，会继承页面默认模型；页面默认模型为空时，继续使用系统默认模型。</p>
         </div>
       </div>
     </el-drawer>

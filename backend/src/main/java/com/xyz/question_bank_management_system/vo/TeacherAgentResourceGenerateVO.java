@@ -12,6 +12,8 @@ public class TeacherAgentResourceGenerateVO {
 
     private String runId;
     private List<AgentTrace> agentTrace = new ArrayList<>();
+    private List<AgentDiscussionMessage> discussionMessages = new ArrayList<>();
+    private DecisionSummary decisionSummary;
     private List<ResourceDraft> resources = new ArrayList<>();
 
     @Data
@@ -22,6 +24,36 @@ public class TeacherAgentResourceGenerateVO {
         private String summary;
         private String modelName;
         private Long llmCallId;
+    }
+
+    @Data
+    public static class AgentDiscussionMessage {
+        private String id;
+        private Integer turnIndex;
+        private Integer round;
+        private String agentId;
+        private String agentName;
+        private String replyToAgentId;
+        private String replyToAgentName;
+        private String role;
+        private String content;
+        private List<String> evidenceRefs = new ArrayList<>();
+        private String createdAt;
+        private String status;
+        private String modelName;
+        private Long llmCallId;
+    }
+
+    @Data
+    public static class DecisionSummary {
+        private String status;
+        private String headline;
+        private String currentProblem;
+        private List<String> weakPoints = new ArrayList<>();
+        private List<String> recommendedResources = new ArrayList<>();
+        private List<String> recommendedPractice = new ArrayList<>();
+        private String teacherAction;
+        private List<String> evidenceRefs = new ArrayList<>();
     }
 
     @Data

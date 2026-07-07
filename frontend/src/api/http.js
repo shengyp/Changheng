@@ -1,5 +1,5 @@
 ﻿import axios from 'axios'
-import { TOKEN_KEY } from '@/stores/auth'
+import { TOKEN_KEY, USER_KEY } from '@/stores/auth'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
@@ -38,6 +38,16 @@ http.interceptors.response.use(
     }
     const status = error.response.status
     const payload = error.response.data
+    if (status === 401) {
+      localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(USER_KEY)
+      const currentPath = window.location.pathname + window.location.search
+      if (!window.location.pathname.includes('/login')) {
+        const redirect = encodeURIComponent(currentPath || '/dashboard')
+        window.location.replace(`/login?redirect=${redirect}`)
+      }
+      throw new ApiError('登录已失效，请重新登录', payload?.code || 'UNAUTHORIZED', status, payload)
+    }
     const msg = payload?.msg || error.message || '请求失败'
     const code = payload?.code || `HTTP_${status}`
     throw new ApiError(msg, code, status, payload)

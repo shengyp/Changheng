@@ -153,6 +153,244 @@ export function normalizeGeneratedCard(card = {}) {
   }
 }
 
+function readableList(rows = [], fallback = '当前薄弱知识点') {
+  const names = rows
+    .map((item) => item?.tagName || item?.name || item)
+    .filter(Boolean)
+    .slice(0, 6)
+  return names.length ? names.join('、') : fallback
+}
+
+function contentLooksEmpty(text = '') {
+  const value = String(text || '').trim()
+  if (!value) return true
+  if (value.length < 80) return true
+  if (/[�]|[鏅璧鐭鑳绋绾炲€€俓]/.test(value)) return true
+  return /根据学生画像、薄弱知识点和教师要求自动生成的个性化资源草案|建议教师复核后使用|自动生成的个性化资源草案/.test(value)
+}
+
+function buildStructuredResourceContent(card = {}, context = {}) {
+  const student = context.student || {}
+  const weakText = readableList(context.weakPoints, 'C 语言基础、数组与字符串、指针与函数')
+  const gapText = readableList(context.abilityGaps, '理解迁移、实践能力、错题反思')
+  const studentName = student.studentName || '当前学生'
+  const scope = context.generationScope === 'class' ? 'class' : 'student'
+  const count = Number(context.exerciseCount || 5)
+  const requirement = context.teacherRequirement || '先补基础概念，再做变式练习，最后完成错因复盘。'
+  const baseEvidence = [
+    `对象：${scope === 'class' ? '当前班级' : studentName}`,
+    `薄弱知识点：${weakText}`,
+    `能力短板：${gapText}`,
+    `作答概况：累计作答 ${student.completedAttemptCount ?? student.attemptCount ?? 0} 次，平均分 ${student.averageScore ?? '暂无'}。`,
+    `教师补充要求：${requirement}`,
+  ]
+
+  if (card.resourceType === 'knowledge_video') {
+    return {
+      sections: [
+        {
+          title: '视频资源',
+          items: [
+            `讲解主题：${weakText}`,
+            '资源形式：优先匹配可播放的 Bilibili / YouTube 知识讲解视频；如果没有可播放链接，教师可补充视频链接后保存。',
+            '观看目标：学生看完后能说清核心概念、关键代码执行过程和常见错误触发条件。',
+          ],
+        },
+        {
+          title: '建议视频结构',
+          items: [
+            '0-3 分钟：用一道典型错题引出本节知识点。',
+            '3-8 分钟：讲清概念、语法规则和变量/内存变化过程。',
+            '8-12 分钟：演示一段可运行代码，并标注容易写错的位置。',
+            '12-15 分钟：给出 2 道随堂检测题，要求学生写出判断依据。',
+          ],
+        },
+        { title: '个性化依据', items: baseEvidence },
+      ],
+    }
+  }
+
+  if (card.resourceType === 'knowledge_handout') {
+    return {
+      sections: [
+        {
+          title: '一、讲义目标',
+          items: [
+            `围绕 ${weakText} 建立可复习的知识框架。`,
+            `重点解决 ${gapText} 相关的理解断点。`,
+            '讲义要求能直接给学生阅读，不能只有目录或标题。',
+          ],
+        },
+        {
+          title: '二、核心概念讲解',
+          items: [
+            '先用一句话定义知识点，再说明它解决什么问题。',
+            '给出 C 语言语法模板，标注变量名、边界条件、输入输出要求。',
+            '用一段短代码展示正确写法，并说明每一行的作用。',
+          ],
+        },
+        {
+          title: '三、典型例题',
+          items: [
+            `例题 1：围绕 ${weakText.split('、')[0] || '薄弱点'} 设计基础识别题，要求学生说出关键语句含义。`,
+            '例题 2：给出一段含边界条件的代码，要求学生预测输出并解释原因。',
+            '例题 3：给出错误代码，让学生定位错误、说明原因并写出修正版本。',
+          ],
+        },
+        {
+          title: '四、易错点提示',
+          items: [
+            '只记语法不理解执行过程，容易在变量更新、下标边界和输入输出上出错。',
+            '遇到字符串、数组或指针题时，要先画出数据结构和访问范围。',
+            '提交答案前检查：初始化、循环条件、数组下标、返回值、输出格式。',
+          ],
+        },
+        { title: '五、个性化依据', items: baseEvidence },
+      ],
+    }
+  }
+
+  if (card.resourceType === 'learning_path') {
+    return {
+      sections: [
+        {
+          title: '阶段 1：知识补齐',
+          items: [
+            `任务：阅读讲义并观看 ${weakText} 相关视频。`,
+            '产出：整理 1 页笔记，写出核心概念、语法模板和 3 个易错点。',
+            '验收：能独立解释一段基础代码的执行过程。',
+          ],
+        },
+        {
+          title: '阶段 2：基础练习',
+          items: [
+            `任务：完成 ${Math.max(3, count)} 道基础题，覆盖概念识别、代码填空和输出判断。`,
+            '产出：每题写出答案依据，不只写最终答案。',
+            '验收：基础题正确率达到 80% 以上再进入下一阶段。',
+          ],
+        },
+        {
+          title: '阶段 3：变式迁移',
+          items: [
+            '任务：完成 2-3 道变式题，把知识点放到新的题干或小程序中使用。',
+            `关注：${gapText}，尤其是能否迁移到没见过的题型。`,
+            '验收：能说明题目变化点和解题策略变化。',
+          ],
+        },
+        {
+          title: '阶段 4：错因复盘',
+          items: [
+            '任务：整理本轮错题，标注错因、知识点和修正方法。',
+            '产出：形成“错误原因 -> 正确方法 -> 同类题提醒”的复盘表。',
+            '验收：再做 1 道同类题，确认不再重复同一类错误。',
+          ],
+        },
+        { title: '阶段依据', items: baseEvidence },
+      ],
+    }
+  }
+
+  if (card.resourceType === 'error_reflection') {
+    const detailSource = Array.isArray(card.errorItems) && card.errorItems.length
+      ? card.errorItems
+      : Array.isArray(card.wrongQuestions) && card.wrongQuestions.length
+        ? card.wrongQuestions
+        : []
+    const questionItems = detailSource.slice(0, scope === 'class' ? 15 : 10).map((item, index) => {
+      const title = item.title || item.stem || item.questionTitle || `错题 ${index + 1}`
+      const wrongCount = item.wrongCount ?? item.errorCount ?? item.count
+      const prefix = scope === 'class' && wrongCount != null ? `错 ${wrongCount} 人：` : ''
+      return `${prefix}${title}。分析重点：涉及知识点、错误原因、正确解法、同类题迁移。`
+    })
+    return {
+      sections: [
+        {
+          title: scope === 'class' ? '班级高频错题排序' : '学生错题重点复盘',
+          items: questionItems.length
+            ? questionItems
+            : [
+                scope === 'class'
+                  ? `当前接口暂未返回班级逐题错误人数，先按薄弱知识点 ${weakText} 建立高频错题复盘清单；后端接入错题统计后应按错误人数从高到低取前 10-15 题。`
+                  : `当前接口暂未返回学生具体错题题干，先按薄弱知识点 ${weakText} 建立待复核错题清单；后端接入学生错题记录后应逐题展示最近错题。`,
+              ],
+        },
+        {
+          title: '逐题分析模板',
+          items: [
+            '题目：保留原题题干、学生答案、标准答案和得分情况。',
+            '错因：区分概念不清、边界遗漏、审题偏差、代码执行顺序误判、输出格式错误。',
+            '修正：给出正确解法和关键代码片段。',
+            '迁移：安排 1 道同类变式题，要求学生写出判断依据。',
+          ],
+        },
+        {
+          title: '复盘产出',
+          items: [
+            '学生端：形成个人错题复盘表，下一次练习前先看复盘表。',
+            '班级端：形成高频错题讲评顺序，优先讲错误人数最多的题。',
+            '教师端：讲评后再次布置同类变式题，观察错误率是否下降。',
+          ],
+        },
+        { title: '个性化依据', items: baseEvidence },
+      ],
+    }
+  }
+
+  if (card.resourceType === 'remedial_exercise') {
+    return {
+      sections: [
+        {
+          title: '练习配置',
+          items: [
+            `练习主题：${weakText}`,
+            `题量建议：${Math.max(3, count)} 道`,
+            '题型结构：基础识别题、代码阅读题、变式应用题、错因复盘题。',
+          ],
+        },
+        {
+          title: '训练目标',
+          items: [
+            '每道题必须包含题干、答案、解析和知识点标签。',
+            '学生答错时，先提示相关概念，再展示完整解析。',
+            `重点观察 ${gapText} 是否改善。`,
+          ],
+        },
+        { title: '个性化依据', items: baseEvidence },
+      ],
+    }
+  }
+
+  return {
+    sections: [
+      { title: '资源说明', items: [card.summary || `围绕 ${weakText} 生成的个性化学习资源。`] },
+      { title: '个性化依据', items: baseEvidence },
+    ],
+  }
+}
+
+function structuredContentToText(structured) {
+  return (structured?.sections || [])
+    .map((section) => [
+      section.title,
+      ...(section.items || []).map((item, index) => `${index + 1}. ${item}`),
+    ].join('\n'))
+    .join('\n\n')
+}
+
+function enrichGeneratedCard(card = {}, context = {}) {
+  const normalized = normalizeGeneratedCard(card)
+  const structuredContent = normalized.structuredContent || buildStructuredResourceContent(normalized, context)
+  const content = contentLooksEmpty(normalized.content)
+    ? structuredContentToText(structuredContent)
+    : normalized.content
+  return {
+    ...normalized,
+    structuredContent,
+    content,
+    summary: normalized.summary || (structuredContent.sections?.[0]?.items?.[0] || '已生成可审核的个性化学习资源。'),
+  }
+}
+
 export function formatWeakPointNames(weakPoints = [], limit = 3) {
   const names = weakPoints.map((item) => item.tagName).filter(Boolean).slice(0, limit)
   return names.length ? names.join('、') : '暂无明显薄弱知识点'
@@ -285,7 +523,7 @@ export function normalizeGeneratedCards(cards = [], context = {}) {
       const hasRecommendations = Array.isArray(card?.videoRecommendations) && card.videoRecommendations.length > 0
       return !(videoResourceTypes.has(card?.resourceType) && !card?.sourceUrl && !hasRecommendations && Array.isArray(card?.videoScenes) && card.videoScenes.length > 0)
     })
-    .map(normalizeGeneratedCard)
+    .map((card) => enrichGeneratedCard(card, context))
   return ensureVideoResource(normalized, context)
 }
 
