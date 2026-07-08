@@ -192,6 +192,93 @@ const adminFeedbackRows = computed(() => [
 
 const activityRows = computed(() => (isAdminWorkspace.value ? adminFeedbackRows.value : feedbackRows.value))
 
+const trendRecordTotal = computed(() => trendPoints.value.reduce((sum, item) => sum + Number(item.value || 0), 0))
+
+const generatedResourceCount = computed(() => (
+  isAdminWorkspace.value ? llmProviderTotal.value + llmTemplateTotal.value : resourcePreviewRows.value.length
+))
+
+const backendOverviewCards = computed(() => {
+  if (isAdminWorkspace.value) {
+    return [
+      { title: '系统用户', desc: '平台账号与权限概览', value: userTotal.value, unit: ' 个', path: '/admin/users', icon: UserFilled, tone: 'blue', badge: '账号' },
+      { title: '资源题库', desc: '题目、试卷与作业资源', value: questionTotal.value + paperTotal.value + assignmentTotal.value, unit: ' 项', path: '/questions', icon: FolderOpened, tone: 'cyan', badge: '资源' },
+      { title: '模型服务', desc: '模型与提示词模板配置', value: llmProviderTotal.value + llmTemplateTotal.value, unit: ' 项', path: '/admin/llm/models', icon: Setting, tone: 'purple', badge: '智能' },
+      { title: '调用记录', desc: '大模型调用与系统日志', value: llmCallTotal.value, unit: ' 条', path: '/llm/calls', icon: DataAnalysis, tone: 'amber', badge: '日志' },
+    ]
+  }
+  return [
+    { title: '班级学生', desc: `${classCount.value} 个班级，来自班级管理`, value: studentCount.value, unit: ' 人', path: '/classes/manage', icon: UserFilled, tone: 'blue', badge: '班级' },
+    { title: '薄弱知识点', desc: weakPointRows.value.length ? '来自阶段评价诊断' : '等待阶段评价数据', value: weakPointRows.value.length, unit: ' 项', path: '/teacher/stage-evaluations', icon: DataAnalysis, tone: 'amber', badge: '诊断' },
+    { title: '待处理任务', desc: '待批改作业与待阅测验', value: reviewTotal.value, unit: ' 条', path: '/teacher/review', icon: DocumentChecked, tone: 'purple', badge: '待办' },
+    { title: '资源推荐', desc: '个性化资源生成入口', value: generatedResourceCount.value, unit: ' 个', path: '/teacher/agent-resources', icon: CollectionTag, tone: 'cyan', badge: 'AI' },
+  ]
+})
+
+const backendRefreshLabel = computed(() => (isAdminWorkspace.value ? '刷新系统数据' : '刷新教学数据'))
+
+const aiTeachingTips = computed(() => {
+  if (isAdminWorkspace.value) {
+    return [
+      { id: 'model', label: '模型服务', text: llmProviderTotal.value ? '模型服务已配置，可查看调用质量与日志。' : '暂无可用模型配置，建议先完善模型服务。', tone: 'blue' },
+      { id: 'log', label: '运行记录', text: loginLogTotal.value ? '系统已有登录日志，可进入日志页核查活跃情况。' : '暂无登录日志记录。', tone: 'cyan' },
+      { id: 'resource', label: '资源库', text: questionTotal.value ? '题库资源已建立，可继续完善试卷与作业链路。' : '题库数据较少，建议优先补充教学资源。', tone: 'amber' },
+    ]
+  }
+  return [
+    { id: 'review', label: '今日待办', text: reviewTotal.value ? `当前有 ${reviewTotal.value} 条待处理记录，建议优先进入阅卷中心。` : '暂无待批改记录，班级学习状态稳定。', tone: reviewTotal.value ? 'amber' : 'green' },
+    { id: 'weak', label: '画像诊断', text: weakPointRows.value.length ? '已发现薄弱知识点，可生成针对性讲解与练习资源。' : '暂无明确薄弱知识点，可等待阶段评价更新。', tone: weakPointRows.value.length ? 'purple' : 'blue' },
+    { id: 'resource', label: '资源建议', text: '可根据作业反馈生成讲解视频、练习题和错因复盘资源。', tone: 'cyan' },
+  ]
+})
+
+const weakPointRows = computed(() => {
+  const rows = []
+  stageRows.value.forEach((row) => {
+    const candidates = row.weakKnowledgePoints || row.weakPoints || row.weakTags || row.lowMasteryPoints || []
+    if (Array.isArray(candidates)) {
+      candidates.forEach((item, index) => {
+        rows.push({
+          id: item.id || item.knowledgePointId || `${row.id || row.studentId || 'stage'}-${index}`,
+          name: item.name || item.title || item.knowledgePointName || item.tagName || '未命名知识点',
+          value: item.count ?? item.studentCount ?? item.masteryValue ?? item.score ?? 0,
+          desc: item.description || item.reason || row.studentName || row.username || '来自阶段评价记录',
+        })
+      })
+    }
+  })
+  return rows.slice(0, 5)
+})
+
+// 当前 Dashboard 接口没有返回已生成资源列表；后续可接入教师智能体资源生成结果。
+const resourcePreviewRows = computed(() => [])
+
+const learningHistoryRows = computed(() => {
+  const assignmentRows = recentAssignments.value.slice(0, 3).map((row) => ({
+    id: `assignment-${row.id || row.assignmentId || row.title}`,
+    type: '作业',
+    title: row.title || row.assignmentTitle || `作业 #${row.id || row.assignmentId || '-'}`,
+    desc: row.status || row.assignmentType || '教学任务记录',
+    date: formatDate(row.updatedAt || row.createdAt || row.publishedAt),
+  }))
+  const paperRows = recentPapers.value.slice(0, 3).map((row) => ({
+    id: `paper-${row.id || row.paperId || row.title}`,
+    type: '试卷',
+    title: row.title || row.paperTitle || `试卷 #${row.id || row.paperId || '-'}`,
+    desc: row.status || '试卷记录',
+    date: formatDate(row.updatedAt || row.createdAt),
+  }))
+  return [...assignmentRows, ...paperRows].slice(0, 5)
+})
+
+function reloadDashboard() {
+  if (isAdminWorkspace.value) {
+    loadAdminDashboard()
+  } else {
+    loadTeacherDashboard()
+  }
+}
+
 const shortcutItems = computed(() => {
   const all = [
     { title: '我的作业', desc: '查看并开始待完成作业', path: '/assignments/my', roles: ['STUDENT'], icon: DocumentChecked, group: '学生学习' },
@@ -244,6 +331,19 @@ const studentSmartCards = computed(() => [
   { title: '学习路径', desc: '按画像生成可执行安排。', path: '/learning-path', icon: Connection, tone: 'blue' },
   { title: '智能推荐', desc: '查看系统推荐资源和练习。', path: '/smart-recommendations', icon: Reading, tone: 'teal' },
   { title: '资源库', desc: '查看教师发布和系统资源。', path: '/learning-resources', icon: FolderOpened, tone: 'gold' },
+])
+
+const studentUnifiedStatCards = computed(() => [
+  { title: '学习任务', value: '作业', desc: '查看待完成和已提交任务', path: '/assignments/my', icon: DocumentChecked, tone: 'blue', badge: '任务' },
+  { title: '练习入口', value: '题库', desc: '进入题库练习与专项训练', path: '/question-bank', icon: Reading, tone: 'amber', badge: '练习' },
+  { title: '学习画像', value: '诊断', desc: '查看薄弱点、优势点和画像依据', path: '/knowledge-profile', icon: DataAnalysis, tone: 'purple', badge: '画像' },
+  { title: '推荐资源', value: '资源', desc: '查看学习资源与智能推荐', path: '/smart-recommendations', icon: CollectionTag, tone: 'cyan', badge: 'AI' },
+])
+
+const studentHeroMetrics = computed(() => [
+  { label: '今日建议', value: studentTodayTasks.value.length },
+  { label: '反馈入口', value: studentInsightCards.value.length },
+  { label: '智能学习', value: studentSmartCards.value.length },
 ])
 
 watch(isBackendWorkspace, async (value) => {
@@ -527,6 +627,43 @@ function cleanFeedbackTitle(text) {
 
 <template>
   <div v-if="isBackendWorkspace" ref="pageRoot" v-loading="loading" class="backend-dashboard">
+    <section class="dashboard-page-head motion-hero" aria-labelledby="backend-dashboard-title">
+      <div class="page-title-group">
+        <p class="eyebrow">{{ isAdminWorkspace ? 'Admin Console' : 'Teacher Console' }}</p>
+        <h1 id="backend-dashboard-title">{{ dashboardTitle }}</h1>
+        <p>{{ dashboardSubtitle }}</p>
+      </div>
+      <div class="hero-summary-panel" aria-label="今日教学摘要">
+        <span class="ai-badge">教学摘要</span>
+        <div class="hero-summary-grid">
+          <span>
+            <strong>{{ reviewTotal }}</strong>
+            <small>{{ isAdminWorkspace ? '调用记录' : '待处理任务' }}</small>
+          </span>
+          <span>
+            <strong>{{ trendRecordTotal }}</strong>
+            <small>近 7 日记录</small>
+          </span>
+          <span>
+            <strong>{{ generatedResourceCount }}</strong>
+            <small>{{ isAdminWorkspace ? '模型配置' : '已生成资源' }}</small>
+          </span>
+        </div>
+      </div>
+      <div class="page-head-actions">
+        <div class="profile-chip">
+          <span class="profile-avatar">{{ firstChar(displayName) }}</span>
+          <span>
+            <strong>{{ displayName }}</strong>
+            <small>{{ isAdminWorkspace ? '管理员' : '教师' }}</small>
+          </span>
+        </div>
+        <el-button class="hero-action" type="primary" :loading="loading" @click="reloadDashboard">
+          {{ backendRefreshLabel }}
+        </el-button>
+      </div>
+    </section>
+
     <section class="dashboard-hero motion-hero" aria-labelledby="backend-dashboard-title">
       <div class="profile-card">
         <span class="profile-avatar">{{ firstChar(displayName) }}</span>
@@ -545,7 +682,30 @@ function cleanFeedbackTitle(text) {
       </el-button>
     </section>
 
-    <p v-if="loadError" class="dashboard-error">{{ loadError }}</p>
+    <section v-if="loadError" class="dashboard-error motion-card">
+      <span>{{ loadError }}</span>
+      <el-button link type="danger" @click="reloadDashboard">重试</el-button>
+    </section>
+
+    <section class="overview-grid" aria-label="数据概览">
+      <button
+        v-for="card in backendOverviewCards"
+        :key="card.title"
+        type="button"
+        :class="['metric-card', 'motion-card', card.tone]"
+        @click="router.push(card.path)"
+      >
+        <span class="metric-icon">
+          <el-icon><component :is="card.icon" /></el-icon>
+        </span>
+        <span class="metric-copy">
+          <strong>{{ card.title }}</strong>
+          <small>{{ card.desc }}</small>
+          <em><b>{{ card.value }}</b>{{ card.unit }}</em>
+        </span>
+        <span class="metric-badge">{{ card.badge }}</span>
+      </button>
+    </section>
 
     <section class="dashboard-grid" :aria-label="dashboardTitle">
       <article class="insight-panel dash-card motion-card">
@@ -624,6 +784,12 @@ function cleanFeedbackTitle(text) {
             <el-icon><ArrowRight /></el-icon>
           </button>
         </div>
+        <div class="ai-reminder-list">
+          <div v-for="tip in aiTeachingTips" :key="tip.id" :class="['ai-reminder-item', tip.tone]">
+            <span>{{ tip.label }}</span>
+            <p>{{ tip.text }}</p>
+          </div>
+        </div>
         <div v-if="workRows.length" class="todo-list">
           <button v-for="row in workRows" :key="row.id" type="button" class="todo-row" @click="router.push(row.path)">
             <span class="mini-avatar">{{ row.avatar }}</span>
@@ -673,34 +839,145 @@ function cleanFeedbackTitle(text) {
       </article>
     </section>
 
-    <aside class="date-widget" aria-label="日期">
-      <strong>今日</strong>
-      <time>{{ todayLabel }}</time>
-    </aside>
+    <section class="education-core-grid motion-card" aria-label="教育业务核心区">
+      <article class="compact-card">
+        <div class="compact-card-head">
+          <div>
+            <p class="eyebrow">Weak Points</p>
+            <h2>薄弱知识点 Top 5</h2>
+          </div>
+          <el-tag size="small" effect="plain">{{ weakPointRows.length }} 项</el-tag>
+        </div>
+        <div v-if="weakPointRows.length" class="compact-list">
+          <button v-for="item in weakPointRows" :key="item.id" type="button" class="knowledge-row" @click="router.push('/teacher/stage-evaluations')">
+            <span>
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.desc }}</small>
+            </span>
+            <el-progress :percentage="Math.min(100, Number(item.value) || 0)" :show-text="false" />
+          </button>
+        </div>
+        <div v-else class="mini-empty">暂无薄弱知识点数据，可在阶段评价接口补充后展示。</div>
+      </article>
+
+      <article class="compact-card">
+        <div class="compact-card-head">
+          <div>
+            <p class="eyebrow">Resources</p>
+            <h2>个性化资源推荐</h2>
+          </div>
+          <el-button link type="primary" @click="router.push(isAdminWorkspace ? '/admin/llm/models' : '/teacher/agent-resources')">
+            {{ isAdminWorkspace ? '模型配置' : '生成资源' }}
+          </el-button>
+        </div>
+        <div v-if="resourcePreviewRows.length" class="compact-list">
+          <button v-for="item in resourcePreviewRows" :key="item.id" type="button" class="resource-row">
+            <span class="type-pill">{{ item.type }}</span>
+            <span>
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.desc }}</small>
+            </span>
+          </button>
+        </div>
+        <div v-else class="mini-empty">暂无资源生成结果，进入智能体资源生成后可查看。</div>
+      </article>
+
+      <article class="compact-card">
+        <div class="compact-card-head">
+          <div>
+            <p class="eyebrow">History</p>
+            <h2>学习历史记录</h2>
+          </div>
+          <el-button link type="primary" @click="router.push(isAdminWorkspace ? '/llm/calls' : '/teacher/review')">查看记录</el-button>
+        </div>
+        <div v-if="learningHistoryRows.length" class="compact-list">
+          <button v-for="item in learningHistoryRows" :key="item.id" type="button" class="history-row" @click="router.push(item.type === '试卷' ? '/papers' : '/assignments/manage')">
+            <span class="type-pill muted-pill">{{ item.type }}</span>
+            <span>
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.desc }} · {{ item.date }}</small>
+            </span>
+          </button>
+        </div>
+        <div v-else class="mini-empty">暂无考试、作业或学习记录。</div>
+      </article>
+    </section>
+
+    <section class="detail-record-card dash-card motion-card" aria-label="详细记录区">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Activity</p>
+          <h2>{{ isAdminWorkspace ? '系统概览记录' : '作业反馈详情' }}</h2>
+        </div>
+        <button type="button" @click="router.push(isAdminWorkspace ? '/admin/users' : '/teacher/stage-evaluations')">
+          更多
+          <el-icon><ArrowRight /></el-icon>
+        </button>
+      </div>
+      <div v-if="activityRows.length" class="detail-record-list">
+        <button
+          v-for="row in activityRows"
+          :key="row.id"
+          type="button"
+          class="detail-record-row"
+          @click="router.push(row.path)"
+        >
+          <span class="mini-avatar photo">{{ row.avatar }}</span>
+          <span class="detail-record-main">
+            <strong>{{ row.student }}</strong>
+            <small>{{ cleanFeedbackTitle(row.title) }}</small>
+          </span>
+          <span v-if="feedbackScoreTags(row.title).length" class="ai-score-tags">
+            <span v-for="tag in feedbackScoreTags(row.title)" :key="tag" class="ai-score-tag">{{ tag }}</span>
+          </span>
+          <time>{{ row.date }}</time>
+          <el-icon><ArrowRight /></el-icon>
+        </button>
+      </div>
+      <div v-else class="mini-empty">{{ isAdminWorkspace ? '暂无系统概览数据。' : '暂无阶段反馈记录。' }}</div>
+    </section>
+
+    <Teleport to="body">
+      <aside class="date-widget dashboard-date-floating" aria-label="日期">
+        <strong>今日</strong>
+        <time>{{ todayLabel }}</time>
+      </aside>
+    </Teleport>
   </div>
 
   <div v-else ref="pageRoot" class="student-dashboard">
     <section class="student-hero motion-hero" aria-labelledby="dashboard-title">
-      <div class="student-hero-card">
-        <span class="profile-avatar">{{ firstChar(displayName) }}</span>
-        <div>
-          <p class="eyebrow">Student Workspace</p>
-          <h1 id="dashboard-title">{{ displayName }}</h1>
-          <span>学生</span>
+      <div class="student-hero-copy">
+        <p class="eyebrow">Student Console</p>
+        <h1 id="dashboard-title">学生学习总览</h1>
+        <p>欢迎回来，{{ displayName }}。集中查看作业、题库练习、学习画像、智能推荐和下一步学习路径。</p>
+      </div>
+      <div class="hero-summary-panel student-hero-summary" aria-label="今日学习摘要">
+        <span class="ai-badge">学习摘要</span>
+        <div class="hero-summary-grid">
+          <span v-for="item in studentHeroMetrics" :key="item.label">
+            <strong>{{ item.value }}</strong>
+            <small>{{ item.label }}</small>
+          </span>
         </div>
       </div>
-      <div class="student-hero-copy">
-        <h2>首页</h2>
-        <p>集中查看作业、练习、画像诊断、学习路径和智能推荐，快速进入下一步学习。</p>
+      <div class="page-head-actions student-head-actions">
+        <div class="profile-chip">
+          <span class="profile-avatar">{{ firstChar(displayName) }}</span>
+          <span>
+            <strong>{{ displayName }}</strong>
+            <small>学生</small>
+          </span>
+        </div>
+        <el-button class="student-hero-action" type="primary" :icon="ArrowRight" @click="router.push('/assignments/my')">
+          进入我的作业
+        </el-button>
       </div>
-      <el-button class="student-hero-action" plain type="primary" :icon="ArrowRight" @click="router.push('/assignments/my')">
-        进入我的作业
-      </el-button>
     </section>
 
     <section class="student-summary-grid" aria-label="学习概览">
       <button
-        v-for="card in studentStatCards"
+        v-for="card in studentUnifiedStatCards"
         :key="card.title"
         type="button"
         :class="['student-summary-card', 'motion-card', card.tone]"
@@ -714,6 +991,7 @@ function cleanFeedbackTitle(text) {
           <small>{{ card.title }}</small>
           <em>{{ card.desc }}</em>
         </span>
+        <span class="student-card-badge">{{ card.badge }}</span>
       </button>
     </section>
 
@@ -1905,7 +2183,1372 @@ function cleanFeedbackTitle(text) {
   line-height: 1.5;
 }
 
+/* Current page dashboard refinement: light modern education admin style. */
+.backend-dashboard {
+  max-width: 1680px;
+  width: 100%;
+  margin: 0 auto;
+  gap: 20px;
+  min-height: calc(100vh - 120px);
+  padding: 6px 4px 72px;
+  color: #172033;
+}
+
+.dashboard-hero {
+  display: none;
+}
+
+.dashboard-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border: 1px solid #e5eaf3;
+  border-radius: 18px;
+  padding: 22px 24px;
+  background:
+    linear-gradient(135deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.96)),
+    #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+}
+
+.page-title-group {
+  min-width: 0;
+}
+
+.page-title-group h1 {
+  margin: 0;
+  color: #111827;
+  font-size: 28px;
+  line-height: 1.25;
+  font-weight: 800;
+}
+
+.page-title-group p:last-child {
+  max-width: 860px;
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.page-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  border: 1px solid #e5eaf3;
+  border-radius: 999px;
+  padding: 5px 12px 5px 6px;
+  background: #ffffff;
+}
+
+.profile-chip .profile-avatar {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  color: #2563eb;
+  background: #eff6ff;
+  font-size: 15px;
+}
+
+.profile-chip strong,
+.profile-chip small {
+  display: block;
+}
+
+.profile-chip strong {
+  color: #172033;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.profile-chip small {
+  margin-top: 1px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.backend-dashboard .hero-action {
+  min-height: 42px;
+  border: 0;
+  border-radius: 12px;
+  padding: 0 18px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #2563eb, #0891b2);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.16);
+}
+
+.dashboard-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: #991b1b;
+  background: #fff1f2;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.dashboard-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.dash-card,
+.metric-card {
+  border: 1px solid #e5eaf3;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+}
+
+.dash-card {
+  padding: 20px;
+}
+
+.dash-card:hover,
+.metric-card:hover,
+.metric-card:focus-visible {
+  border-color: rgba(37, 99, 235, 0.22);
+  box-shadow: 0 16px 36px rgba(37, 99, 235, 0.09);
+}
+
+.insight-panel {
+  grid-column: span 8;
+  min-height: 360px;
+}
+
+.todo-panel {
+  grid-column: span 4;
+  min-height: 360px;
+}
+
+.feedback-panel {
+  grid-column: span 8;
+}
+
+.feedback-panel::before,
+.insight-metric-grid {
+  display: none;
+}
+
+.panel-head {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.panel-head h2 {
+  color: #111827;
+  font-size: 18px;
+}
+
+.panel-head .eyebrow {
+  color: #2563eb;
+}
+
+.panel-head button {
+  min-height: 32px;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.insight-content {
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 250px;
+}
+
+.student-stat-card {
+  min-height: 108px;
+  border: 1px solid #e5eaf3;
+  background: #f8fafc;
+}
+
+.student-stat-card.mint,
+.student-stat-card.warm,
+.student-stat-card.blue {
+  background: #f8fafc;
+}
+
+.student-stat-card strong {
+  color: #1d4ed8;
+}
+
+.student-stat-card em {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.trend-chart {
+  min-height: 250px;
+}
+
+.review-summary {
+  gap: 12px;
+}
+
+.review-summary button {
+  min-height: 112px;
+  border: 1px solid #e5eaf3;
+  background: #f8fafc;
+}
+
+.review-summary button:nth-child(2) {
+  background: #f8fafc;
+}
+
+.review-summary strong {
+  color: #1d4ed8;
+}
+
+.todo-list,
+.feedback-list {
+  gap: 10px;
+}
+
+.todo-row,
+.feedback-row {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 9px 10px;
+  background: #ffffff;
+}
+
+.todo-row:hover,
+.todo-row:focus-visible,
+.feedback-row:hover,
+.feedback-row:focus-visible {
+  transform: translateY(-1px);
+  border-color: #dbeafe;
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+.metric-card {
+  min-height: 116px;
+  padding: 18px;
+}
+
+.metric-icon {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.metric-card.blue .metric-icon,
+.metric-card.gold .metric-icon,
+.metric-card.teal .metric-icon {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.metric-copy strong {
+  color: #111827;
+}
+
+.metric-copy b {
+  color: #1d4ed8;
+}
+
+.review-action {
+  margin-top: 14px;
+  background: linear-gradient(135deg, #2563eb, #0891b2);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.16);
+}
+
+.date-widget {
+  border: 1px solid #e5eaf3;
+  color: #172033;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+}
+
+/* Compact education admin dashboard overrides. */
+.backend-dashboard {
+  max-width: none;
+  width: min(1720px, calc(100vw - 64px));
+  margin: 0 auto;
+  gap: 16px;
+  min-height: calc(100vh - 96px);
+  padding: 0 0 48px;
+  background: #f5f7fb;
+  box-shadow: 0 0 0 100vmax #f5f7fb;
+  clip-path: inset(0 -100vmax);
+}
+
+.dashboard-page-head {
+  min-height: 82px;
+  border-color: #e6eaf0;
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.page-title-group h1 {
+  font-size: 24px;
+}
+
+.page-title-group p:last-child {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.page-head-actions {
+  gap: 10px;
+}
+
+.profile-chip {
+  min-height: 40px;
+  border-radius: 12px;
+}
+
+.backend-dashboard .hero-action {
+  min-height: 38px;
+  border-radius: 10px;
+  background: #2563eb;
+  box-shadow: none;
+}
+
+.dashboard-error {
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff7f7;
+}
+
+.overview-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.overview-grid .metric-card {
+  min-height: 104px;
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: none;
+}
+
+.overview-grid .metric-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+}
+
+.overview-grid .metric-copy b {
+  font-size: 28px;
+}
+
+.dashboard-grid {
+  gap: 16px;
+}
+
+.dash-card {
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: none;
+}
+
+.insight-panel {
+  grid-column: span 8;
+  min-height: 340px;
+}
+
+.todo-panel {
+  grid-column: span 4;
+  min-height: 340px;
+}
+
+.feedback-panel {
+  display: none;
+}
+
+.panel-head {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+}
+
+.panel-head h2,
+.compact-card-head h2 {
+  margin: 0;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.panel-head > div > p:last-child {
+  margin: 5px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.insight-content {
+  grid-template-columns: 150px minmax(0, 1fr);
+  min-height: 234px;
+}
+
+.student-stat-stack {
+  gap: 10px;
+}
+
+.student-stat-card {
+  min-height: 98px;
+  border-radius: 12px;
+  padding: 13px;
+}
+
+.trend-chart {
+  min-height: 228px;
+}
+
+.review-summary button {
+  min-height: 92px;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.review-summary strong {
+  font-size: 26px;
+}
+
+.todo-row {
+  grid-template-columns: 28px 70px minmax(0, 1fr) 76px;
+  min-height: 40px;
+  padding: 8px 9px;
+}
+
+.todo-row time {
+  display: none;
+}
+
+.review-action {
+  min-height: 38px;
+  border-radius: 10px;
+  background: #2563eb;
+  box-shadow: none;
+}
+
+.education-core-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.compact-card,
+.detail-record-card {
+  border: 1px solid #e6eaf0;
+  border-radius: 14px;
+  padding: 16px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.compact-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.compact-card-head .eyebrow {
+  color: #2563eb;
+}
+
+.compact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.knowledge-row,
+.resource-row,
+.history-row {
+  display: grid;
+  align-items: center;
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+  padding: 10px;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.knowledge-row {
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 10px;
+}
+
+.resource-row,
+.history-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.knowledge-row:hover,
+.resource-row:hover,
+.history-row:hover,
+.detail-record-row:hover {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.knowledge-row strong,
+.resource-row strong,
+.history-row strong,
+.detail-record-main strong {
+  display: block;
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-row small,
+.resource-row small,
+.history-row small,
+.detail-record-main small {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: #6b7280;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #2563eb;
+  background: #eff6ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.muted-pill {
+  color: #475569;
+  background: #f1f5f9;
+}
+
+.mini-empty {
+  display: grid;
+  min-height: 112px;
+  place-items: center;
+  border: 1px dashed #dbe3ee;
+  border-radius: 12px;
+  padding: 16px;
+  color: #94a3b8;
+  background: #fafcff;
+  font-size: 13px;
+  text-align: center;
+}
+
+.detail-record-card {
+  grid-column: 1 / -1;
+}
+
+.detail-record-list {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-record-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto 92px 18px;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #ffffff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.detail-record-row time {
+  color: #64748b;
+  font-size: 12px;
+  text-align: right;
+}
+
+.date-widget {
+  position: fixed;
+  right: 28px;
+  bottom: 88px;
+  z-index: 30;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.dashboard-date-floating {
+  position: fixed !important;
+  right: 28px !important;
+  bottom: 28px !important;
+  z-index: 3000 !important;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
+}
+
+/* Student dashboard unified with teacher/admin console style. */
+.student-dashboard {
+  width: 100%;
+  max-width: none;
+  margin: 0 auto;
+  gap: 16px;
+  min-height: calc(100vh - 96px);
+  padding: 0 0 48px;
+  color: #172033;
+  background: #f5f7fb;
+  box-shadow: 0 0 0 100vmax #f5f7fb;
+  clip-path: inset(0 -100vmax);
+}
+
+.student-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 150px;
+  gap: 24px;
+  border: 0;
+  border-radius: 18px;
+  padding: 22px 24px;
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(255, 255, 255, 0.28), transparent 22%),
+    radial-gradient(circle at 52% 112%, rgba(20, 184, 166, 0.42), transparent 34%),
+    linear-gradient(135deg, #2563eb 0%, #4f46e5 48%, #14b8a6 100%);
+  box-shadow: 0 16px 38px rgba(37, 99, 235, 0.16);
+}
+
+.student-hero::before {
+  display: none;
+}
+
+.student-hero-copy {
+  min-width: 0;
+}
+
+.student-hero-copy .eyebrow,
+.student-hero-copy h1,
+.student-hero-copy p {
+  color: #ffffff;
+}
+
+.student-hero-copy .eyebrow {
+  margin-bottom: 8px;
+  opacity: 0.82;
+}
+
+.student-hero-copy h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.student-hero-copy p {
+  max-width: 720px;
+  margin: 10px 0 0;
+  opacity: 0.86;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.student-hero-summary {
+  flex: 0 0 320px;
+}
+
+.student-head-actions {
+  flex: 0 0 auto;
+}
+
+.student-head-actions .profile-chip {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.student-head-actions .profile-chip strong,
+.student-head-actions .profile-chip small {
+  color: #ffffff;
+}
+
+.student-head-actions .profile-avatar {
+  color: #2563eb;
+  background: #ffffff;
+}
+
+.student-hero-action {
+  min-height: 42px;
+  border: 0;
+  border-radius: 12px;
+  padding: 0 18px;
+  color: #2563eb;
+  background: #ffffff;
+  font-weight: 800;
+  box-shadow: none;
+}
+
+.student-hero-action:hover,
+.student-hero-action:focus {
+  color: #1d4ed8;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.student-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.student-summary-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 116px;
+  border: 0;
+  border-radius: 18px;
+  padding: 18px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+}
+
+.student-summary-card::after {
+  position: absolute;
+  right: -28px;
+  bottom: -36px;
+  width: 112px;
+  height: 112px;
+  border-radius: 999px;
+  content: '';
+  opacity: 0.5;
+}
+
+.student-summary-card.blue {
+  background: linear-gradient(135deg, #eff6ff, #ffffff);
+}
+
+.student-summary-card.amber {
+  background: linear-gradient(135deg, #fff7ed, #ffffff);
+}
+
+.student-summary-card.purple {
+  background: linear-gradient(135deg, #f5f3ff, #ffffff);
+}
+
+.student-summary-card.cyan {
+  background: linear-gradient(135deg, #ecfeff, #ffffff);
+}
+
+.student-summary-card.blue::after {
+  background: #bfdbfe;
+}
+
+.student-summary-card.amber::after {
+  background: #fed7aa;
+}
+
+.student-summary-card.purple::after {
+  background: #ddd6fe;
+}
+
+.student-summary-card.cyan::after {
+  background: #a5f3fc;
+}
+
+.student-card-badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.student-summary-card .summary-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
+
+.student-summary-card.blue .summary-icon,
+.student-summary-card.blue strong {
+  color: #2563eb;
+}
+
+.student-summary-card.amber .summary-icon,
+.student-summary-card.amber strong {
+  color: #d97706;
+}
+
+.student-summary-card.purple .summary-icon,
+.student-summary-card.purple strong {
+  color: #7c3aed;
+}
+
+.student-summary-card.cyan .summary-icon,
+.student-summary-card.cyan strong {
+  color: #0f766e;
+}
+
+.student-summary-card.blue .summary-icon {
+  background: #dbeafe;
+}
+
+.student-summary-card.amber .summary-icon {
+  background: #ffedd5;
+}
+
+.student-summary-card.purple .summary-icon {
+  background: #ede9fe;
+}
+
+.student-summary-card.cyan .summary-icon {
+  background: #ccfbf1;
+}
+
+.student-summary-card small {
+  color: #111827;
+}
+
+.student-summary-card em {
+  color: #64748b;
+}
+
+.student-bento-grid {
+  grid-template-columns: minmax(0, 1.45fr) minmax(380px, 0.85fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.student-panel {
+  border: 1px solid #e6eaf0;
+  border-radius: 16px;
+  padding: 18px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+}
+
+.student-learning-panel {
+  grid-column: 1;
+  grid-row: span 2;
+  background:
+    linear-gradient(180deg, rgba(239, 246, 255, 0.88), rgba(255, 255, 255, 0.96) 38%),
+    #ffffff;
+}
+
+.student-task-panel {
+  grid-column: 2;
+  grid-row: span 2;
+  border-color: #dbeafe;
+  background:
+    radial-gradient(circle at 90% 12%, rgba(124, 58, 237, 0.11), transparent 28%),
+    linear-gradient(180deg, #ffffff, #f8fbff);
+}
+
+.student-feedback-panel,
+.student-smart-panel {
+  grid-column: auto;
+}
+
+.student-feedback-panel {
+  background: linear-gradient(180deg, #ffffff, #fffbeb);
+}
+
+.student-smart-panel {
+  background: linear-gradient(180deg, #ffffff, #f0fdfa);
+}
+
+.student-primary-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.student-insight-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.student-action-card,
+.student-task-row,
+.student-mini-card,
+.student-smart-card {
+  border-color: #eef2f7;
+  background: #ffffff;
+}
+
+.student-task-row {
+  border-left: 3px solid #2563eb;
+}
+
+.task-tag,
+.student-smart-card.mint .shortcut-icon,
+.student-smart-card.teal .shortcut-icon {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.student-smart-card.blue .shortcut-icon {
+  color: #2563eb;
+  background: #dbeafe;
+}
+
+.student-smart-card.gold .shortcut-icon {
+  color: #d97706;
+  background: #ffedd5;
+}
+
+/* Modern intelligent education workspace layer. */
+.dashboard-page-head {
+  min-height: 150px;
+  position: relative;
+  overflow: hidden;
+  border: 0;
+  border-radius: 18px;
+  padding: 22px 24px;
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(255, 255, 255, 0.28), transparent 22%),
+    radial-gradient(circle at 52% 112%, rgba(20, 184, 166, 0.42), transparent 34%),
+    linear-gradient(135deg, #2563eb 0%, #4f46e5 48%, #14b8a6 100%);
+  box-shadow: 0 16px 38px rgba(37, 99, 235, 0.16);
+}
+
+.dashboard-page-head::before,
+.dashboard-page-head::after {
+  position: absolute;
+  content: '';
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.dashboard-page-head::before {
+  right: 330px;
+  bottom: -54px;
+  width: 160px;
+  height: 160px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.dashboard-page-head::after {
+  top: -44px;
+  right: -28px;
+  width: 190px;
+  height: 190px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.dashboard-page-head > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-page-head .eyebrow,
+.dashboard-page-head .page-title-group h1,
+.dashboard-page-head .page-title-group p:last-child {
+  color: #ffffff;
+}
+
+.dashboard-page-head .eyebrow {
+  opacity: 0.82;
+}
+
+.dashboard-page-head .page-title-group h1 {
+  font-size: 28px;
+}
+
+.dashboard-page-head .page-title-group p:last-child {
+  max-width: 680px;
+  opacity: 0.86;
+}
+
+.hero-summary-panel {
+  min-width: 320px;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(14px);
+}
+
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #dffafe;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.hero-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.hero-summary-grid span {
+  display: grid;
+  gap: 3px;
+}
+
+.hero-summary-grid strong {
+  color: #ffffff;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.hero-summary-grid small {
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 12px;
+}
+
+.dashboard-page-head .profile-chip {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.dashboard-page-head .profile-chip strong,
+.dashboard-page-head .profile-chip small {
+  color: #ffffff;
+}
+
+.dashboard-page-head .profile-chip .profile-avatar {
+  color: #2563eb;
+  background: #ffffff;
+}
+
+.backend-dashboard .hero-action {
+  color: #2563eb;
+  background: #ffffff;
+}
+
+.overview-grid .metric-card {
+  position: relative;
+  overflow: hidden;
+  border: 0;
+}
+
+.overview-grid .metric-card::after {
+  position: absolute;
+  right: -28px;
+  bottom: -36px;
+  width: 112px;
+  height: 112px;
+  border-radius: 999px;
+  content: '';
+  opacity: 0.5;
+}
+
+.overview-grid .metric-card.blue {
+  background: linear-gradient(135deg, #eff6ff, #ffffff);
+}
+
+.overview-grid .metric-card.amber {
+  background: linear-gradient(135deg, #fff7ed, #ffffff);
+}
+
+.overview-grid .metric-card.purple {
+  background: linear-gradient(135deg, #f5f3ff, #ffffff);
+}
+
+.overview-grid .metric-card.cyan {
+  background: linear-gradient(135deg, #ecfeff, #ffffff);
+}
+
+.overview-grid .metric-card.blue::after {
+  background: #bfdbfe;
+}
+
+.overview-grid .metric-card.amber::after {
+  background: #fed7aa;
+}
+
+.overview-grid .metric-card.purple::after {
+  background: #ddd6fe;
+}
+
+.overview-grid .metric-card.cyan::after {
+  background: #a5f3fc;
+}
+
+.metric-badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.overview-grid .metric-card.blue .metric-icon,
+.overview-grid .metric-card.blue .metric-copy b {
+  color: #2563eb;
+}
+
+.overview-grid .metric-card.amber .metric-icon,
+.overview-grid .metric-card.amber .metric-copy b {
+  color: #d97706;
+}
+
+.overview-grid .metric-card.purple .metric-icon,
+.overview-grid .metric-card.purple .metric-copy b {
+  color: #7c3aed;
+}
+
+.overview-grid .metric-card.cyan .metric-icon,
+.overview-grid .metric-card.cyan .metric-copy b {
+  color: #0f766e;
+}
+
+.overview-grid .metric-card.blue .metric-icon {
+  background: #dbeafe;
+}
+
+.overview-grid .metric-card.amber .metric-icon {
+  background: #ffedd5;
+}
+
+.overview-grid .metric-card.purple .metric-icon {
+  background: #ede9fe;
+}
+
+.overview-grid .metric-card.cyan .metric-icon {
+  background: #ccfbf1;
+}
+
+.insight-panel {
+  background:
+    linear-gradient(180deg, rgba(239, 246, 255, 0.88), rgba(255, 255, 255, 0.96) 38%),
+    #ffffff;
+}
+
+.trend-block {
+  border-radius: 16px;
+  padding: 12px 14px 4px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(240, 253, 250, 0.52));
+}
+
+.todo-panel {
+  border-color: #dbeafe;
+  background:
+    radial-gradient(circle at 90% 12%, rgba(124, 58, 237, 0.11), transparent 28%),
+    linear-gradient(180deg, #ffffff, #f8fbff);
+}
+
+.ai-reminder-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.ai-reminder-item {
+  border-left: 3px solid #2563eb;
+  border-radius: 12px;
+  padding: 10px 11px;
+  background: #f8fafc;
+}
+
+.ai-reminder-item span {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ai-reminder-item p {
+  margin: 7px 0 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-reminder-item.blue span {
+  color: #2563eb;
+  background: #dbeafe;
+}
+
+.ai-reminder-item.cyan span {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.ai-reminder-item.amber span {
+  color: #d97706;
+  background: #ffedd5;
+}
+
+.ai-reminder-item.purple span {
+  color: #7c3aed;
+  background: #ede9fe;
+}
+
+.ai-reminder-item.green span {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+.compact-card:nth-child(1) {
+  background: linear-gradient(180deg, #ffffff, #fffbeb);
+}
+
+.compact-card:nth-child(2) {
+  background: linear-gradient(180deg, #ffffff, #f0fdfa);
+}
+
+.compact-card:nth-child(3) {
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.knowledge-row :deep(.el-progress-bar__inner) {
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+}
+
+.resource-row {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.history-row {
+  position: relative;
+  padding-left: 14px;
+}
+
+.history-row::before {
+  position: absolute;
+  left: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  content: '';
+  background: #14b8a6;
+}
+
+.detail-record-card {
+  background: #ffffff;
+}
+
+.detail-record-row {
+  background: linear-gradient(90deg, #ffffff, #f8fbff);
+}
+
+/* Wide-screen fit and second-row equal-height refinement. */
+.backend-dashboard {
+  width: 100%;
+  max-width: none;
+  padding-inline: 0;
+}
+
+.dashboard-page-head,
+.overview-grid,
+.dashboard-grid,
+.education-core-grid,
+.detail-record-card {
+  width: 100%;
+}
+
+.dashboard-grid {
+  grid-template-columns: minmax(0, 2fr) minmax(420px, 1fr);
+  align-items: stretch;
+}
+
+.insight-panel {
+  grid-column: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
+}
+
+.todo-panel {
+  grid-column: auto;
+  min-height: 520px;
+}
+
+.insight-content {
+  flex: 1;
+  min-height: 0;
+}
+
+.trend-block {
+  min-height: 0;
+}
+
+.trend-chart {
+  min-height: 330px;
+}
+
+.student-stat-stack {
+  align-content: start;
+}
+
+.education-core-grid {
+  margin-top: 0;
+}
+
 @media (max-width: 1280px) {
+  .backend-dashboard {
+    width: min(100%, calc(100vw - 40px));
+  }
+
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-page-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .page-head-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .education-core-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-record-card {
+    grid-column: auto;
+  }
+
   .dashboard-hero {
     grid-template-columns: 1fr;
     align-items: start;
@@ -1949,6 +3592,30 @@ function cleanFeedbackTitle(text) {
     grid-template-columns: 1fr;
   }
 
+  .overview-grid,
+  .education-core-grid,
+  .page-head-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-grid {
+    display: grid;
+  }
+
+  .detail-record-row {
+    grid-template-columns: 32px minmax(0, 1fr) 18px;
+  }
+
+  .detail-record-row .ai-score-tags,
+  .detail-record-row time {
+    display: none;
+  }
+
+  .page-head-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .student-stat-stack,
   .review-summary,
   .student-summary-grid,
@@ -1973,7 +3640,7 @@ function cleanFeedbackTitle(text) {
 
   .date-widget {
     right: 12px;
-    bottom: 12px;
+    bottom: 74px;
   }
 }
 
@@ -2012,6 +3679,66 @@ function cleanFeedbackTitle(text) {
 
   .student-task-row > .el-icon {
     display: none;
+  }
+}
+
+@media (max-width: 1280px) {
+  .student-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .student-hero-summary {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .student-head-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .student-bento-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .student-learning-panel,
+  .student-task-panel,
+  .student-feedback-panel,
+  .student-smart-panel {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 820px) {
+  .student-dashboard {
+    padding-bottom: 90px;
+  }
+
+  .student-summary-grid,
+  .student-primary-actions,
+  .student-insight-grid,
+  .student-smart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .student-head-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .student-summary-grid,
+  .student-primary-actions,
+  .student-insight-grid,
+  .student-smart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .student-hero-copy h1 {
+    font-size: 24px;
   }
 }
 </style>
