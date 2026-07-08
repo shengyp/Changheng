@@ -133,7 +133,13 @@ onMounted(loadData)
 
 <template>
   <el-card class="page-card">
-    <h3 class="card-title">用户管理</h3>
+    <div class="admin-head">
+      <div>
+        <p class="eyebrow">Account Center</p>
+        <h3 class="card-title">用户管理</h3>
+        <p class="muted">维护学生、教师和管理员账号状态，必要时调整角色权限。</p>
+      </div>
+    </div>
     <div class="page-toolbar">
       <el-button type="success" @click="createVisible = true">新建用户</el-button>
       <el-button type="primary" @click="loadData">刷新</el-button>
@@ -261,6 +267,29 @@ onMounted(loadData)
 </template>
 
 <style scoped>
+.admin-head {
+  margin-bottom: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.06), transparent 42%),
+    #f8fafc;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.admin-head .card-title {
+  margin-bottom: 6px;
+}
+
 .table-pager {
   margin-top: 12px;
   justify-content: flex-end;

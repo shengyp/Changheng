@@ -10,6 +10,13 @@
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  margin-bottom: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.06), transparent 42%),
+    #f8fafc;
 }
 
 .panel-actions {
@@ -34,4 +41,15 @@
 
 :deep(.clickable-row td) {
   cursor: pointer;
-}
+}
+
+:deep(.clickable-row:hover td) {
+  background: #f0fdfa !important;
+}
+
+.answer-preview {
+  border: 1px solid #e6edf3;
+  border-radius: 14px;
+  padding: 14px;
+  background: #f8fafc;
+}

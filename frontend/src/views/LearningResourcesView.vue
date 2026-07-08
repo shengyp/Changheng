@@ -99,6 +99,15 @@ onMounted(loadData)
 </script>
 
 <template>
+  <section class="resource-hero">
+    <div>
+      <p class="eyebrow">Learning Resources</p>
+      <h1>学习资源库</h1>
+      <p>{{ canManage ? '管理课程资源、视频链接和知识点关联，保证学生看到的是可用资源。' : '按知识点查找教师发布和系统推荐的学习资源。' }}</p>
+    </div>
+    <el-button v-if="canManage" type="primary" @click="openCreate">新增资源</el-button>
+  </section>
+
   <el-card class="page-card">
     <div class="page-toolbar">
       <el-input v-model="query.keyword" clearable style="width: 240px" placeholder="搜索资源" />
@@ -106,7 +115,7 @@ onMounted(loadData)
         <el-option v-for="item in knowledgePoints" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
       <el-button type="primary" @click="loadData">查询</el-button>
-      <el-button v-if="canManage" type="success" @click="openCreate">新增资源</el-button>
+      <el-button @click="query.keyword = ''; query.knowledgePointId = undefined; loadData()">重置</el-button>
     </div>
 
     <el-table :data="resources" border v-loading="loading">
@@ -144,3 +153,49 @@ onMounted(loadData)
     </template>
   </el-dialog>
 </template>
+
+<style scoped>
+.resource-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(220, 235, 230, 0.94);
+  border-radius: 20px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 14% 16%, rgba(20, 184, 166, 0.18), transparent 32%),
+    linear-gradient(112deg, rgba(20, 184, 166, 0.18), rgba(255, 255, 255, 0.95));
+  box-shadow: 0 16px 40px rgba(15, 118, 110, 0.08);
+}
+
+.resource-hero .eyebrow {
+  margin: 0 0 8px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resource-hero h1 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 30px;
+  line-height: 1.2;
+}
+
+.resource-hero p:last-child {
+  margin: 10px 0 0;
+  color: #475569;
+  line-height: 1.7;
+}
+
+@media (max-width: 720px) {
+  .resource-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>

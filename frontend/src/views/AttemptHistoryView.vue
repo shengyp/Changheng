@@ -46,7 +46,13 @@ onMounted(loadData)
 
 <template>
   <el-card class="page-card">
-    <h3 class="card-title">作答记录</h3>
+    <div class="records-head">
+      <div>
+        <p class="eyebrow">Attempt History</p>
+        <h3 class="card-title">作答记录</h3>
+        <p class="muted">查看作业、练习和测评的提交情况，继续未完成作答或回看结果。</p>
+      </div>
+    </div>
     <div class="page-toolbar">
       <el-select
         v-model="attemptType"
@@ -112,6 +118,29 @@ onMounted(loadData)
 </template>
 
 <style scoped>
+.records-head {
+  margin-bottom: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.06), transparent 42%),
+    #f8fafc;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.records-head .card-title {
+  margin-bottom: 6px;
+}
+
 .table-pager {
   margin-top: 12px;
   justify-content: flex-end;

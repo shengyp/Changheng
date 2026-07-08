@@ -34,7 +34,13 @@ onMounted(loadData)
 
 <template>
   <el-card class="page-card">
-    <h3 class="card-title">我的申诉记录</h3>
+    <div class="appeal-head">
+      <div>
+        <p class="eyebrow">Appeal Center</p>
+        <h3 class="card-title">我的申诉记录</h3>
+        <p class="muted">查看作答申诉的提交状态和处理进度。</p>
+      </div>
+    </div>
 
     <div class="page-toolbar">
       <el-select v-model="status" clearable style="width: 180px" placeholder="状态筛选">
@@ -79,6 +85,29 @@ onMounted(loadData)
 </template>
 
 <style scoped>
+.appeal-head {
+  margin-bottom: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.06), transparent 42%),
+    #f8fafc;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.appeal-head .card-title {
+  margin-bottom: 6px;
+}
+
 .table-pager {
   margin-top: 12px;
   justify-content: flex-end;

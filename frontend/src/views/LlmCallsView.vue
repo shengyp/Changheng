@@ -55,7 +55,13 @@ onMounted(loadData)
 
 <template>
   <el-card class="page-card">
-    <h3 class="card-title">大模型调用记录</h3>
+    <div class="llm-calls-head">
+      <div>
+        <p class="eyebrow">Model Trace</p>
+        <h3 class="card-title">大模型调用记录</h3>
+        <p class="muted">查看模型调用状态、耗时、费用和请求响应内容，用于排查生成链路。</p>
+      </div>
+    </div>
     <div class="page-toolbar">
       <el-input-number v-model="query.bizType" :min="1" placeholder="业务类型" />
       <el-input-number v-model="query.bizId" :min="1" placeholder="业务ID" />
@@ -130,6 +136,29 @@ onMounted(loadData)
 </template>
 
 <style scoped>
+.llm-calls-head {
+  margin-bottom: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.06), transparent 42%),
+    #f8fafc;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.llm-calls-head .card-title {
+  margin-bottom: 6px;
+}
+
 .table-pager {
   margin-top: 12px;
   justify-content: flex-end;

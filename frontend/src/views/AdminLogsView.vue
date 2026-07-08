@@ -146,7 +146,13 @@ onMounted(() => {
 
 <template>
   <el-card class="page-card">
-    <h3 class="card-title">系统日志</h3>
+    <div class="admin-head">
+      <div>
+        <p class="eyebrow">System Trace</p>
+        <h3 class="card-title">系统日志</h3>
+        <p class="muted">追踪登录、操作和系统变更记录，用于排查异常和审计行为。</p>
+      </div>
+    </div>
 
     <el-tabs v-model="activeTab">
       <el-tab-pane label="登录日志" name="login">
@@ -256,6 +262,29 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.admin-head {
+  margin-bottom: 14px;
+  border: 1px solid #e6edf3;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.06), transparent 42%),
+    #f8fafc;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.admin-head .card-title {
+  margin-bottom: 6px;
+}
+
 .table-pager {
   margin-top: 12px;
   justify-content: flex-end;

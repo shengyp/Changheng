@@ -157,7 +157,7 @@ async function handleLogout() {
   <div v-if="isLearningPathReport" class="report-layout">
     <RouterView />
   </div>
-  <el-container v-else :class="['layout-root', { 'backend-shell': !isStudent }]">
+  <el-container v-else :class="['layout-root', { 'backend-shell': !isStudent, 'student-shell': isStudent }]">
     <el-aside width="240px" class="layout-aside">
       <div class="brand">
         <div class="brand-mark">题库</div>
@@ -283,6 +283,12 @@ async function handleLogout() {
   place-content: center;
   font-weight: 700;
   box-shadow: 0 8px 18px rgba(79, 143, 123, 0.22);
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+
+.brand:hover .brand-mark {
+  transform: translateY(-1px) scale(1.04);
+  box-shadow: 0 12px 24px rgba(79, 143, 123, 0.28);
 }
 
 .brand-text {
@@ -309,6 +315,13 @@ async function handleLogout() {
   color: #039c7f;
   font-weight: 800;
   background: #ddf4ef;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, background-color 0.22s ease;
+}
+
+.module-pill:hover {
+  transform: translateY(-1px);
+  background: #d4f2eb;
+  box-shadow: 0 12px 24px rgba(15, 118, 110, 0.08);
 }
 
 .module-pill .el-icon {
@@ -332,6 +345,7 @@ async function handleLogout() {
   font-weight: 800;
   letter-spacing: 0;
   background: transparent;
+  transition: color 0.18s ease, background-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
 }
 
 .layout-menu :deep(.el-sub-menu__title .el-icon),
@@ -345,6 +359,7 @@ async function handleLogout() {
 .layout-menu :deep(.home-menu-item:hover) {
   color: #039c7f;
   background: #f4faf8;
+  transform: translateX(2px);
 }
 
 .layout-menu :deep(.el-sub-menu .el-menu) {
@@ -363,6 +378,7 @@ async function handleLogout() {
 .layout-menu :deep(.el-sub-menu .el-menu-item:hover) {
   color: #039c7f;
   background: #f5fbf9;
+  transform: translateX(2px);
 }
 
 .layout-menu :deep(.el-sub-menu .el-menu-item.is-active) {
@@ -376,6 +392,23 @@ async function handleLogout() {
   color: #039c7f;
   background: #eef8f5;
   box-shadow: inset 6px 0 0 #10b98f;
+}
+
+.layout-menu :deep(.el-menu-item.is-active),
+.layout-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) {
+  position: relative;
+}
+
+.layout-menu :deep(.el-menu-item.is-active::after),
+.layout-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title::after) {
+  position: absolute;
+  right: 14px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  content: '';
+  background: #14b8a6;
+  box-shadow: 0 0 0 5px rgba(20, 184, 166, 0.12);
 }
 
 .layout-menu :deep(.el-sub-menu__icon-arrow) {
@@ -462,17 +495,41 @@ async function handleLogout() {
     linear-gradient(120deg, rgba(79, 143, 123, 0.07), transparent 34%),
     linear-gradient(180deg, rgba(233, 243, 239, 0.55), rgba(250, 252, 251, 0.85) 240px),
     var(--app-bg);
+  background-size: auto, auto, auto;
   padding: 18px;
+}
+
+.layout-main {
+  transition: background-position 0.4s ease;
 }
 
 .backend-shell .layout-main {
   min-height: calc(100vh - 72px);
   padding: 24px;
   background:
+    radial-gradient(circle at 14% 0%, rgba(20, 184, 166, 0.11), transparent 30%),
+    radial-gradient(circle at 86% 8%, rgba(56, 189, 248, 0.09), transparent 26%),
     linear-gradient(90deg, rgba(15, 118, 110, 0.035) 1px, transparent 1px),
     linear-gradient(180deg, rgba(15, 118, 110, 0.035) 1px, transparent 1px),
     linear-gradient(180deg, rgba(248, 252, 255, 0.92), rgba(244, 247, 251, 0.98));
-  background-size: 28px 28px, 28px 28px, auto;
+  background-size: auto, auto, 28px 28px, 28px 28px, auto;
+  animation: shellGridDrift 32s linear infinite;
+}
+
+@keyframes shellGridDrift {
+  from {
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0;
+  }
+
+  to {
+    background-position: 0 0, 0 0, 56px 0, 0 56px, 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backend-shell .layout-main {
+    animation: none;
+  }
 }
 
 @media (max-width: 900px) {

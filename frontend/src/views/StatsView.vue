@@ -107,15 +107,19 @@ onMounted(() => {
 </script>
 
 <template>
-  <el-card class="page-card">
-    <h3 class="card-title">学习能力总览</h3>
+  <section class="stats-hero">
+    <div>
+      <p class="eyebrow">Learning Insight</p>
+      <h1>学习统计</h1>
+      <p>集中查看能力值、知识点掌握度、错题状态和题目作答表现。</p>
+    </div>
     <div class="ability-box">
       <div class="ability-num">{{ ability.abilityScore ?? 0 }}</div>
       <div class="ability-desc">当前能力值（0-100）</div>
     </div>
-  </el-card>
+  </section>
 
-  <el-tabs>
+  <el-tabs class="stats-tabs">
     <el-tab-pane label="掌握度">
       <el-card class="page-card">
         <div class="page-toolbar">
@@ -235,6 +239,43 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.stats-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(220, 235, 230, 0.94);
+  border-radius: 20px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(20, 184, 166, 0.2), transparent 30%),
+    linear-gradient(112deg, rgba(20, 184, 166, 0.18), rgba(255, 255, 255, 0.95));
+  box-shadow: 0 16px 40px rgba(15, 118, 110, 0.08);
+}
+
+.stats-hero .eyebrow {
+  margin: 0 0 8px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stats-hero h1 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 30px;
+  line-height: 1.2;
+}
+
+.stats-hero p:last-child {
+  margin: 10px 0 0;
+  color: #475569;
+  line-height: 1.7;
+}
+
 .ability-box {
   display: inline-flex;
   flex-direction: column;
@@ -242,25 +283,50 @@ onMounted(() => {
   justify-content: center;
   min-width: 220px;
   padding: 18px;
-  border-radius: 14px;
-  border: 1px solid #dbe8f4;
-  background: linear-gradient(140deg, #edf7ff, #fef3e7);
+  border-radius: 18px;
+  border: 1px solid rgba(20, 184, 166, 0.22);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(240, 253, 250, 0.86)),
+    #ffffff;
+  box-shadow: 0 14px 30px rgba(15, 118, 110, 0.1);
+  transition: transform 0.24s ease, box-shadow 0.24s ease;
+}
+
+.ability-box:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 42px rgba(15, 118, 110, 0.14);
 }
 
 .ability-num {
   font-size: 48px;
   line-height: 1;
-  color: #0b3954;
-  font-weight: 700;
+  color: #0f766e;
+  font-weight: 800;
 }
 
 .ability-desc {
   margin-top: 8px;
-  color: #486581;
+  color: #475569;
+  font-weight: 700;
+}
+
+.stats-tabs :deep(.el-tabs__header) {
+  margin-bottom: 14px;
+  border-radius: 14px;
+  padding: 8px 12px 0;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.04);
 }
 
 .table-pager {
   margin-top: 12px;
   justify-content: flex-end;
+}
+
+@media (max-width: 720px) {
+  .stats-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>

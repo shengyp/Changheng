@@ -29,13 +29,16 @@ import {
   teacherApi,
 } from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
+import { animatePageEnter } from '@/utils/pageMotion'
 
 use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const router = useRouter()
 const auth = useAuthStore()
+const pageRoot = ref(null)
 const trendChartRef = ref(null)
 let trendChart = null
+let pageMotionContext = null
 
 const loading = ref(false)
 const loadError = ref('')
@@ -260,11 +263,15 @@ watch(trendPoints, () => {
 
 onMounted(() => {
   window.addEventListener('resize', resizeTrendChart)
+  nextTick(() => {
+    pageMotionContext = animatePageEnter(pageRoot.value)
+  })
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeTrendChart)
   disposeTrendChart()
+  pageMotionContext?.revert()
 })
 
 async function loadTeacherDashboard() {
@@ -519,8 +526,8 @@ function cleanFeedbackTitle(text) {
 </script>
 
 <template>
-  <div v-if="isBackendWorkspace" v-loading="loading" class="backend-dashboard">
-    <section class="dashboard-hero" aria-labelledby="backend-dashboard-title">
+  <div v-if="isBackendWorkspace" ref="pageRoot" v-loading="loading" class="backend-dashboard">
+    <section class="dashboard-hero motion-hero" aria-labelledby="backend-dashboard-title">
       <div class="profile-card">
         <span class="profile-avatar">{{ firstChar(displayName) }}</span>
         <div>
@@ -541,7 +548,7 @@ function cleanFeedbackTitle(text) {
     <p v-if="loadError" class="dashboard-error">{{ loadError }}</p>
 
     <section class="dashboard-grid" :aria-label="dashboardTitle">
-      <article class="insight-panel dash-card">
+      <article class="insight-panel dash-card motion-card">
         <div class="panel-head">
           <div>
             <p class="eyebrow">INSIGHT</p>
@@ -594,7 +601,7 @@ function cleanFeedbackTitle(text) {
         </div>
       </article>
 
-      <article class="todo-panel dash-card">
+      <article class="todo-panel dash-card motion-card">
         <div class="panel-head">
           <div>
             <p class="eyebrow">TASKS</p>
@@ -632,7 +639,7 @@ function cleanFeedbackTitle(text) {
         </el-button>
       </article>
 
-      <article class="feedback-panel dash-card">
+      <article class="feedback-panel dash-card motion-card">
         <div class="panel-head">
           <div>
             <p class="eyebrow">ACTIVITY</p>
@@ -672,8 +679,8 @@ function cleanFeedbackTitle(text) {
     </aside>
   </div>
 
-  <div v-else class="student-dashboard">
-    <section class="student-hero" aria-labelledby="dashboard-title">
+  <div v-else ref="pageRoot" class="student-dashboard">
+    <section class="student-hero motion-hero" aria-labelledby="dashboard-title">
       <div class="student-hero-card">
         <span class="profile-avatar">{{ firstChar(displayName) }}</span>
         <div>
@@ -696,7 +703,7 @@ function cleanFeedbackTitle(text) {
         v-for="card in studentStatCards"
         :key="card.title"
         type="button"
-        :class="['student-summary-card', card.tone]"
+        :class="['student-summary-card', 'motion-card', card.tone]"
         @click="router.push(card.path)"
       >
         <span class="summary-icon">
@@ -711,7 +718,7 @@ function cleanFeedbackTitle(text) {
     </section>
 
     <section class="student-bento-grid" aria-label="学生工作台">
-      <article class="student-panel student-learning-panel">
+      <article class="student-panel student-learning-panel motion-card">
         <div class="section-heading">
           <div>
             <p class="eyebrow">Learning</p>
@@ -733,7 +740,7 @@ function cleanFeedbackTitle(text) {
         </div>
       </article>
 
-      <article class="student-panel student-task-panel">
+      <article class="student-panel student-task-panel motion-card">
         <div class="section-heading">
           <div>
             <p class="eyebrow">Today</p>
@@ -753,7 +760,7 @@ function cleanFeedbackTitle(text) {
         </div>
       </article>
 
-      <article class="student-panel student-feedback-panel">
+      <article class="student-panel student-feedback-panel motion-card">
         <div class="section-heading">
           <div>
             <p class="eyebrow">Feedback</p>
@@ -772,7 +779,7 @@ function cleanFeedbackTitle(text) {
         </div>
       </article>
 
-      <article class="student-panel student-smart-panel">
+      <article class="student-panel student-smart-panel motion-card">
         <div class="section-heading">
           <div>
             <p class="eyebrow">Smart Learning</p>

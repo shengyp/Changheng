@@ -39,7 +39,16 @@ onMounted(loadPlan)
 
 <template>
   <div class="practice-page">
-    <el-card shadow="never">
+    <section class="practice-hero">
+      <div>
+        <p class="eyebrow">Adaptive Practice</p>
+        <h1>个性化练习</h1>
+        <p>系统根据薄弱知识点生成练习计划，开始后会进入正式作答页。</p>
+      </div>
+      <el-button type="primary" :loading="starting" @click="startPractice">生成并开始</el-button>
+    </section>
+
+    <el-card class="page-card practice-control-card" shadow="never">
       <template #header>
         <div class="card-header">
           <span>个性化练习生成</span>
@@ -65,7 +74,7 @@ onMounted(loadPlan)
       <el-alert v-if="plan?.reason" :title="plan.reason" type="info" show-icon :closable="false" />
     </el-card>
 
-    <el-card shadow="never">
+    <el-card class="page-card" shadow="never">
       <template #header>薄弱知识点</template>
       <el-table v-loading="loading" :data="plan?.weakPoints || []" border>
         <el-table-column prop="name" label="知识点" min-width="160" />
@@ -84,11 +93,60 @@ onMounted(loadPlan)
   gap: 16px;
 }
 
+.practice-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 150px;
+  overflow: hidden;
+  border: 1px solid rgba(220, 235, 230, 0.94);
+  border-radius: 20px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(20, 184, 166, 0.18), transparent 30%),
+    linear-gradient(112deg, rgba(20, 184, 166, 0.2), rgba(255, 255, 255, 0.94));
+  box-shadow: 0 16px 40px rgba(15, 118, 110, 0.08);
+}
+
+.practice-hero .eyebrow {
+  margin: 0 0 8px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.practice-hero h1 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 30px;
+  line-height: 1.2;
+}
+
+.practice-hero p:last-child {
+  margin: 10px 0 0;
+  color: #475569;
+  line-height: 1.7;
+}
+
 .card-header,
 .actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.practice-control-card :deep(.el-card__header) {
+  border-bottom-color: #edf2f7;
+}
+
+@media (max-width: 720px) {
+  .practice-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>
