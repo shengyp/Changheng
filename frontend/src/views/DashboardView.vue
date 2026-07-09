@@ -3125,6 +3125,107 @@ function cleanFeedbackTitle(text) {
   background: #ffedd5;
 }
 
+/* MotionSites-inspired stats and AI feature card polish. */
+.overview-grid .metric-card,
+.student-summary-card {
+  isolation: isolate;
+  transform: translateZ(0);
+}
+
+.overview-grid .metric-card::before,
+.student-summary-card::before {
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  content: '';
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), transparent 38%),
+    radial-gradient(circle at 18% 18%, rgba(255, 255, 255, 0.65), transparent 24%);
+  opacity: 0.72;
+  z-index: -1;
+}
+
+.overview-grid .metric-card:hover,
+.student-summary-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 44px rgba(37, 99, 235, 0.11);
+}
+
+.overview-grid .metric-card:hover .metric-icon,
+.student-summary-card:hover .summary-icon {
+  transform: scale(1.08) rotate(-2deg);
+}
+
+.metric-badge,
+.student-card-badge {
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.ai-reminder-item {
+  position: relative;
+  overflow: hidden;
+  border-left: 0;
+  border: 1px solid rgba(226, 232, 240, 0.72);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.92));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.ai-reminder-item::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  content: '';
+  background: linear-gradient(180deg, #2563eb, #14b8a6);
+}
+
+.ai-reminder-item:hover,
+.student-task-row:hover,
+.resource-row:hover,
+.history-row:hover,
+.knowledge-row:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.06);
+}
+
+.ai-reminder-item.green::before {
+  background: linear-gradient(180deg, #22c55e, #14b8a6);
+}
+
+.ai-reminder-item.amber::before {
+  background: linear-gradient(180deg, #f59e0b, #fb7185);
+}
+
+.ai-reminder-item.purple::before {
+  background: linear-gradient(180deg, #7c3aed, #2563eb);
+}
+
+.compact-card,
+.student-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.compact-card::before,
+.student-panel::before {
+  position: absolute;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+  background: radial-gradient(circle at 92% 0%, rgba(37, 99, 235, 0.08), transparent 30%);
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+
+.compact-card:hover::before,
+.student-panel:hover::before {
+  opacity: 1;
+}
+
 /* Modern intelligent education workspace layer. */
 .dashboard-page-head {
   min-height: 150px;

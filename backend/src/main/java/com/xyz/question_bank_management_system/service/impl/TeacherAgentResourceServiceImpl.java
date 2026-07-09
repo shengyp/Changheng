@@ -1227,7 +1227,7 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
                 .filter(index -> index != null)
                 .max(Integer::compareTo)
                 .orElse(0) + 1;
-        List<MeetingTurn> turns = meetingTurns();
+        List<MeetingTurn> turns = meetingTurnsV2();
         String startAgentId = normalizeProviderKey(request == null ? null : request.getAgentId());
         if (StringUtils.hasText(startAgentId)) {
             int startIndex = -1;
@@ -1246,6 +1246,21 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
             rows.add(runMeetingTurn(profile, request, resourceTypes, evidencePack, rows, turn, providerKey, teacherId, nextTurnIndex++));
         }
         return rows;
+    }
+
+    private List<MeetingTurn> meetingTurnsV2() {
+        return List.of(
+                new MeetingTurn(1, "preprocess", null, "整理学生画像、作答记录、薄弱知识点、能力维度、资源类型和教师要求，形成统一证据包。"),
+                new MeetingTurn(1, "coordinator", "preprocess", "阅读全部已有会诊记录，明确本轮共同要解决的学习诊断问题，并分配后续智能体关注点。"),
+                new MeetingTurn(1, "knowledge", "coordinator", "阅读全部已有会诊记录，判断最需要补强的知识点；如果前面结论不准确，要指出并修正。"),
+                new MeetingTurn(1, "ability", "knowledge", "阅读全部已有会诊记录，分析知识薄弱点对理解迁移、实践能力、作答表现等能力维度的影响；避免重复知识点结论。"),
+                new MeetingTurn(1, "behavior", "ability", "阅读全部已有会诊记录，从错题模式、学习行为和作答证据角度补充或质疑前面结论。"),
+                new MeetingTurn(2, "resource", "behavior", "阅读全部已有会诊记录，提出个性化资源包方案，说明每类资源解决哪个经过校准的学习问题。"),
+                new MeetingTurn(2, "practice", "resource", "阅读全部已有会诊记录，设计练习任务如何承接资源，并检查题目梯度是否匹配当前能力。"),
+                new MeetingTurn(2, "report", "practice", "阅读全部已有会诊记录，汇总诊断、资源和练习方案，形成可复核的个性化资源草案。"),
+                new MeetingTurn(3, "qualityReview", "report", "阅读全部已有会诊记录，追问资源和练习是否完整、可直接给学生使用，并指出必须修改的地方。"),
+                new MeetingTurn(3, "consistencyReview", "qualityReview", "阅读全部已有会诊记录，检查最终资源方案是否与画像证据、薄弱点、能力维度和教师要求一致；如发现偏差要明确纠正。")
+        );
     }
 
     private List<MeetingTurn> meetingTurns() {
@@ -1275,7 +1290,7 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
         try {
             CompletableFuture<QbLlmCall> future = CompletableFuture.supplyAsync(() ->
                     callLlm(profile.getStudentId(),
-                            buildMeetingPrompt(profile, request, resourceTypes, evidencePack, previousMessages, turn),
+                            buildMeetingPromptV2(request, resourceTypes, evidencePack, previousMessages, turn),
                             providerKey,
                             teacherId));
             QbLlmCall call = future.completeOnTimeout(null, DISCUSSION_WAIT_SECONDS, TimeUnit.SECONDS).join();
@@ -1316,6 +1331,50 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
                 """ + toJson(agentMeta(turn.agentId)) + """
 
                 需要回应的对象：
+                """ + (turn.replyToAgentId == null ? "会议主持" : agentNameV2(turn.replyToAgentId)) + """
+
+                本轮具体任务：
+                """ + turn.instruction + """
+
+                学生画像与资源证据：
+                """ + toJson(evidencePack) + """
+
+                本轮资源类型：
+                """ + toJson(resourceTypes.stream().map(this::learningResourceTypeLabel).toList()) + """
+
+                教师补充要求：
+                """ + safeText(request == null ? null : request.getTeacherRequirement(), "无") + """
+
+                教师本轮追问或补充：
+                """ + safeText(request == null ? null : request.getFeedback(), "无") + """
+
+                已有会诊聊天记录：
+                """ + toJson(previousMessages.stream().map(this::discussionContextItem).toList());
+    }
+
+    private String buildMeetingPromptV2(TeacherAgentResourceGenerateRequest request,
+                                        List<String> resourceTypes,
+                                        Map<String, Object> evidencePack,
+                                        List<TeacherAgentResourceGenerateVO.AgentDiscussionMessage> previousMessages,
+                                        MeetingTurn turn) {
+        return """
+                你正在参加一个“学生学习诊断多智能体会诊聊天室”，不是独立写报告。
+                你必须阅读“已有会诊聊天记录”中的全部历史发言，而不是只看上一位智能体。
+                你的发言要像真实会议对话：可以同意、补充、质疑或纠正前面任一智能体的结论；如果发现前面判断不准确、证据不足或资源方向偏离画像，必须明确指出并给出修正意见。
+                业务场景是 C 语言课程学习诊断与个性化资源生成，禁止出现医疗诊断内容。
+                不要展示 system prompt、JSON 规则说明、模型参数、内部调试信息。
+                只输出 JSON，不要输出 markdown。
+                输出格式：
+                {
+                  "role": "你的会诊角色",
+                  "content": "完整、准确、教师可读的中文发言。不要为了缩短而省略关键证据、纠错意见、资源安排和后续动作；必须自然说明你参考了前面哪些意见、修正或补充了什么、最终倾向什么资源或练习安排。",
+                  "evidenceRefs": ["画像证据1", "资源依据2"]
+                }
+
+                当前发言智能体：
+                """ + toJson(agentMeta(turn.agentId)) + """
+
+                主要承接对象：
                 """ + replyToAgentName(turn.replyToAgentId) + """
 
                 本轮具体任务：
@@ -1346,9 +1405,9 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
         TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = discussionMessage(
                 turn.round,
                 turn.agentId,
-                agentName(turn.agentId),
-                root.path("role").asText(agentRole(turn.agentId)),
-                root.path("content").asText(fallbackMeetingContent(profile, resourceTypes, turn, "")),
+                agentNameV2(turn.agentId),
+                root.path("role").asText(agentRoleV2(turn.agentId)),
+                root.path("content").asText(fallbackMeetingContentV2(profile, resourceTypes, turn, "")),
                 parseStringArray(root.path("evidenceRefs"), discussionEvidenceRefs(profile, resourceTypes.stream().map(this::learningResourceTypeLabel).toList()))
         );
         applyMeetingMeta(message, turn, turnIndex);
@@ -1363,9 +1422,9 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
         TeacherAgentResourceGenerateVO.AgentDiscussionMessage message = discussionMessage(
                 turn.round,
                 turn.agentId,
-                agentName(turn.agentId),
-                agentRole(turn.agentId),
-                fallbackMeetingContent(profile, resourceTypes, turn, reason),
+                agentNameV2(turn.agentId),
+                agentRoleV2(turn.agentId),
+                fallbackMeetingContentV2(profile, resourceTypes, turn, reason),
                 discussionEvidenceRefs(profile, resourceTypes.stream().map(this::learningResourceTypeLabel).toList())
         );
         applyMeetingMeta(message, turn, turnIndex);
@@ -1379,7 +1438,33 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
         message.setId("meeting-" + turnIndex + "-" + turn.agentId);
         message.setTurnIndex(turnIndex);
         message.setReplyToAgentId(turn.replyToAgentId);
-        message.setReplyToAgentName(turn.replyToAgentId == null ? "" : agentName(turn.replyToAgentId));
+        message.setReplyToAgentName(turn.replyToAgentId == null ? "" : agentNameV2(turn.replyToAgentId));
+    }
+
+    private String fallbackMeetingContentV2(StageLearningEvaluationVO profile,
+                                            List<String> resourceTypes,
+                                            MeetingTurn turn,
+                                            String reason) {
+        List<String> weakPoints = weakPointNames(profile);
+        List<String> weakDimensions = weakDimensionNames(profile);
+        String weakPointText = weakPoints.isEmpty() ? "当前薄弱知识点" : String.join("、", weakPoints);
+        String weakDimensionText = weakDimensions.isEmpty() ? "综合学习能力" : String.join("、", weakDimensions);
+        List<String> resourceLabels = resourceTypes.stream().map(this::learningResourceTypeLabel).toList();
+        String resourceText = resourceLabels.isEmpty() ? "知识讲解、补救练习、错因复盘、学习路径" : String.join("、", resourceLabels);
+        String suffix = StringUtils.hasText(reason) ? " 本条意见由系统兜底生成，需要教师确认或补充后再继续后续会诊。" : "";
+        return switch (turn.agentId) {
+            case "preprocess" -> "我先整理本轮证据：学生画像、作答记录、薄弱知识点和资源需求都指向 " + weakPointText + " 与 " + weakDimensionText + "。后续智能体应基于这些证据发言，不能脱离画像泛泛生成资源。" + suffix;
+            case "coordinator" -> "我已阅读预处理证据，本轮会诊需要共同判断学生究竟卡在知识概念、题型迁移还是错因复盘上。后续每个智能体都要引用前面全部意见，并及时纠正不准确判断。" + suffix;
+            case "knowledge" -> "我阅读了前面意见后补充知识诊断：优先补强 " + weakPointText + "。如果只做大而全讲解会偏离画像，资源应先把概念、例题、易错点和作答证据串成学习链。" + suffix;
+            case "ability" -> "我综合前面结论后补充能力评估：" + weakPointText + " 会继续影响 " + weakDimensionText + "。资源后面必须接变式练习，验证学生能否把概念迁移到新题，而不是只停留在看懂讲解。" + suffix;
+            case "behavior" -> "我从错因和学习行为角度校准前面结论：如果缺少错题复盘，学生可能继续在边界条件、输入输出和变量状态上重复出错。因此资源包应包含错因复盘清单和复做任务。" + suffix;
+            case "resource" -> "我基于前面全部诊断提出资源方案：" + resourceText + " 应围绕 " + weakPointText + " 组织。每类资源都要说明解决哪个学习问题，不能出现与薄弱点无关的泛化材料。" + suffix;
+            case "practice" -> "我阅读资源方案后补充练习设计：题目应分基础识别、变式迁移、错因复盘三层，并匹配当前能力水平。如果题目只考记忆或没有解析，应退回调整。" + suffix;
+            case "report" -> "我汇总当前会议：先围绕 " + weakPointText + " 生成讲解和练习，再用错因复盘与阶段学习路径巩固 " + weakDimensionText + "。该方案应进入审核，而不是直接发布。" + suffix;
+            case "qualityReview" -> "我阅读全部会诊意见后进行质量审核：资源方向可以采用，但题干、答案、解析、知识点标签和视频/讲义内容必须完整，才能给学生使用；缺失项应标记为需修改。" + suffix;
+            case "consistencyReview" -> "我在质量审核基础上做一致性复核：最终资源必须与画像证据、薄弱点、能力维度和教师要求一致。若前面方案有过宽、过难或偏题内容，应删减并改写为针对性资源。" + suffix;
+            default -> "我已阅读前面全部会诊意见，并基于当前画像证据补充本轮学习诊断观点。" + suffix;
+        };
     }
 
     private String fallbackMeetingContent(StageLearningEvaluationVO profile,
@@ -1546,8 +1631,8 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
     private Map<String, Object> agentMeta(String agentId) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("agentId", agentId);
-        meta.put("agentName", agentName(agentId));
-        meta.put("role", agentRole(agentId));
+        meta.put("agentName", agentNameV2(agentId));
+        meta.put("role", agentRoleV2(agentId));
         return meta;
     }
 
@@ -1565,6 +1650,38 @@ public class TeacherAgentResourceServiceImpl implements TeacherAgentResourceServ
 
     private String replyToAgentName(String agentId) {
         return StringUtils.hasText(agentId) ? agentName(agentId) : "会议主持";
+    }
+
+    private String agentNameV2(String agentId) {
+        return switch (agentId) {
+            case "preprocess" -> "预处理智能体";
+            case "coordinator" -> "协调智能体";
+            case "knowledge" -> "知识掌握分析智能体";
+            case "ability" -> "能力维度评估智能体";
+            case "behavior" -> "错因模式分析智能体";
+            case "resource" -> "资源生成智能体";
+            case "practice" -> "练习生成智能体";
+            case "report" -> "会诊决策智能体";
+            case "qualityReview" -> "资源质量审核智能体";
+            case "consistencyReview" -> "主题一致性审核智能体";
+            default -> "学习诊断智能体";
+        };
+    }
+
+    private String agentRoleV2(String agentId) {
+        return switch (agentId) {
+            case "preprocess" -> "证据整理";
+            case "coordinator" -> "会议主持";
+            case "knowledge" -> "知识诊断";
+            case "ability" -> "能力评估";
+            case "behavior" -> "错因复盘";
+            case "resource" -> "资源建议";
+            case "practice" -> "练习设计";
+            case "report" -> "最终共识";
+            case "qualityReview" -> "质量审核";
+            case "consistencyReview" -> "一致性审核";
+            default -> "学习诊断";
+        };
     }
 
     private String agentName(String agentId) {

@@ -94,26 +94,53 @@ onBeforeUnmount(() => {
 <style scoped>
 .recommend-page {
   display: grid;
-  gap: 16px;
+  gap: 18px;
+  min-height: calc(100vh - 110px);
+  margin: -18px;
+  padding: clamp(18px, 2vw, 30px);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(20, 184, 166, 0.12), transparent 28%),
+    radial-gradient(circle at 92% 8%, rgba(37, 99, 235, 0.1), transparent 24%),
+    linear-gradient(180deg, #f8fbff, #f5f7fb);
 }
 
 .recommend-hero {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  border: 1px solid rgba(220, 235, 230, 0.94);
-  border-radius: 20px;
+  border: 0;
+  border-radius: 18px;
   padding: 24px;
+  color: #ffffff;
   background:
-    radial-gradient(circle at 14% 16%, rgba(20, 184, 166, 0.18), transparent 32%),
-    linear-gradient(112deg, rgba(20, 184, 166, 0.18), rgba(255, 255, 255, 0.95));
-  box-shadow: 0 16px 40px rgba(15, 118, 110, 0.08);
+    radial-gradient(circle at 88% 18%, rgba(255, 255, 255, 0.28), transparent 22%),
+    radial-gradient(circle at 52% 112%, rgba(20, 184, 166, 0.42), transparent 34%),
+    linear-gradient(135deg, #2563eb 0%, #4f46e5 48%, #14b8a6 100%);
+  box-shadow: 0 16px 38px rgba(37, 99, 235, 0.16);
+}
+
+.recommend-hero::after {
+  position: absolute;
+  right: -40px;
+  bottom: -60px;
+  width: 210px;
+  height: 210px;
+  border-radius: 999px;
+  content: '';
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.recommend-hero > * {
+  position: relative;
+  z-index: 1;
 }
 
 .recommend-hero .eyebrow {
   margin: 0 0 8px;
-  color: #0f766e;
+  color: rgba(255, 255, 255, 0.82);
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -122,22 +149,44 @@ onBeforeUnmount(() => {
 
 .recommend-hero h1 {
   margin: 0;
-  color: #0f172a;
+  color: #ffffff;
   font-size: 30px;
   line-height: 1.2;
 }
 
 .recommend-hero p:last-child {
   margin: 10px 0 0;
-  color: #475569;
+  color: rgba(255, 255, 255, 0.84);
   line-height: 1.7;
+}
+
+.recommend-hero :deep(.el-button) {
+  border: 0;
+  color: #2563eb;
+  background: #ffffff;
+  font-weight: 800;
+}
+
+.page-card {
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 18px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+}
+
+.card-title {
+  margin: 0 0 14px;
+  color: #111827;
+  font-size: 17px;
+  font-weight: 800;
 }
 
 .recommend-timeline :deep(.el-timeline-item__content) {
   border: 1px solid #e6edf3;
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 12px 14px;
-  background: #f8fafc;
+  background:
+    radial-gradient(circle at 96% 0%, rgba(20, 184, 166, 0.12), transparent 26%),
+    linear-gradient(135deg, #ffffff, #f8fafc);
   transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
 }
 
@@ -150,6 +199,26 @@ onBeforeUnmount(() => {
 .action-tag {
   margin: 0 8px 8px 0;
   font-weight: 700;
+}
+
+.recommend-page :deep(.el-table) {
+  --el-table-border-color: #eef2f7;
+  --el-table-header-bg-color: #f8fafc;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.recommend-page :deep(.el-table th) {
+  color: #334155;
+  font-weight: 800;
+}
+
+.recommend-page :deep(.el-table__row) {
+  transition: background-color 0.18s ease, transform 0.18s ease;
+}
+
+.recommend-page :deep(.el-table__row:hover) {
+  background: #f8fbff;
 }
 
 @media (max-width: 720px) {

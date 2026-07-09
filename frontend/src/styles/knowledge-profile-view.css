@@ -65,7 +65,42 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 20px;
-  padding: 2px 2px 4px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  padding: 24px;
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(255, 255, 255, 0.28), transparent 22%),
+    radial-gradient(circle at 52% 112%, rgba(20, 184, 166, 0.42), transparent 34%),
+    linear-gradient(135deg, #2563eb 0%, #4f46e5 48%, #14b8a6 100%);
+  box-shadow: 0 16px 38px rgba(37, 99, 235, 0.16);
+}
+
+.profile-hero::after {
+  position: absolute;
+  right: -42px;
+  bottom: -72px;
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+  content: '';
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.profile-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.profile-hero .eyebrow,
+.profile-hero h1,
+.profile-hero p {
+  color: #ffffff;
+}
+
+.profile-hero .eyebrow {
+  opacity: 0.82;
 }
 
 .eyebrow {
@@ -113,7 +148,7 @@ h3 {
 .profile-hero p {
   max-width: 920px;
   margin-bottom: 0;
-  color: var(--kp-muted);
+  color: rgba(255, 255, 255, 0.84);
   line-height: 1.7;
 }
 
@@ -133,20 +168,39 @@ h3 {
 }
 
 .summary-card {
+  position: relative;
+  overflow: hidden;
   min-height: 92px;
   padding: 16px;
   display: flex;
   align-items: center;
   gap: 12px;
+  border: 0;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(20, 184, 166, 0.12), transparent 30%),
+    linear-gradient(135deg, #ffffff, #f8fbff);
+}
+
+.summary-card::after {
+  position: absolute;
+  right: -26px;
+  bottom: -34px;
+  width: 96px;
+  height: 96px;
+  border-radius: 999px;
+  content: '';
+  background: rgba(37, 99, 235, 0.08);
 }
 
 .summary-card:hover,
 .report-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   box-shadow: var(--kp-shadow-hover);
 }
 
 .summary-icon {
+  position: relative;
+  z-index: 1;
   flex: 0 0 auto;
   width: 44px;
   height: 44px;
@@ -155,9 +209,16 @@ h3 {
   place-items: center;
   color: var(--kp-primary);
   background: linear-gradient(135deg, #ecfdf5, #ccfbf1);
+  transition: transform 0.24s ease;
+}
+
+.summary-card:hover .summary-icon {
+  transform: scale(1.08) rotate(-2deg);
 }
 
 .summary-card strong {
+  position: relative;
+  z-index: 1;
   display: block;
   color: var(--kp-title);
   font-size: 26px;
@@ -167,6 +228,8 @@ h3 {
 }
 
 .summary-card span {
+  position: relative;
+  z-index: 1;
   display: block;
   margin-top: 4px;
   color: var(--kp-muted);
@@ -174,6 +237,8 @@ h3 {
 }
 
 .summary-card em {
+  position: relative;
+  z-index: 1;
   display: block;
   margin-top: 3px;
   color: var(--kp-primary);

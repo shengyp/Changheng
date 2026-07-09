@@ -148,6 +148,7 @@ const consultationThreadRef = ref(null)
 const consultationWindowOpen = ref(false)
 const consultationState = ref('idle')
 const pausedAgentId = ref('')
+const reviewingMessageId = ref('')
 const followUpText = ref('')
 const meetingPlaybackToken = ref(0)
 const videoPlayback = reactive({})
@@ -327,6 +328,90 @@ const consultationEvidenceItems = computed(() => {
   return buildConsultationEvidenceRefs()
 })
 
+const consultationEvidenceLinks = computed(() => {
+  const student = selectedStudent.value || {}
+  const weakPointRows = weakPoints.value.slice(0, 6)
+  const dimensionRows = lowestDimensions.value.slice(0, 4)
+  const weakPointNames = weakPointRows.map((item) => item.tagName).filter(Boolean)
+  const dimensionNames = dimensionRows.map((item) => item.name).filter(Boolean)
+  const resourceLabels = generationConfig.selectedResourceTypes.map(resourceTypeDisplayLabel)
+  const messages = consultationMessages.value.filter((item) => item.agentId !== 'teacher')
+  const latestByAgent = (agentIds) => messages.filter((item) => agentIds.includes(item.agentId)).slice(-2)
+  const rows = []
+
+  rows.push({
+    id: 'summary-problem',
+    type: '综合诊断',
+    title: consultationDecision.value.headline || '当前学习问题定位',
+    conclusion: consultationDecision.value.currentProblem || '会议结果会根据学生画像生成学习问题定位。',
+    profileData: [
+      student.stageName ? `画像阶段：${student.stageName}` : '',
+      student.abilityScore != null ? `能力值：${student.abilityScore}` : '',
+      student.completedAttemptCount != null ? `完成作答：${student.completedAttemptCount} 次` : '',
+      student.masteryAverage != null ? `平均掌握度：${Math.round(Number(student.masteryAverage) * 100)}%` : '',
+    ].filter(Boolean),
+    meetingBasis: latestByAgent(['preprocess', 'coordinator', 'report']).map((item) => `${item.agentName}：${item.role}`),
+    action: consultationDecision.value.teacherAction || '教师复核资源草案后再发布给学生。',
+  })
+
+  if (weakPointRows.length) {
+    rows.push({
+      id: 'weak-points',
+      type: '知识证据',
+      title: `薄弱知识点对应：${weakPointNames.join('、')}`,
+      conclusion: `会议结果要求资源优先围绕 ${weakPointNames.join('、')} 展开，避免生成泛化材料。`,
+      profileData: weakPointRows.map((item) => profileWeakPointEvidence(item)),
+      meetingBasis: latestByAgent(['knowledge', 'resource', 'consistencyReview']).map((item) => `${item.agentName}：${sanitizeConsultationText(item.content, 120)}`),
+      action: `生成 ${resourceLabels.join('、') || '知识讲解、补救练习、错因复盘'} 时必须绑定这些薄弱点。`,
+    })
+  }
+
+  if (dimensionRows.length) {
+    rows.push({
+      id: 'ability-dimensions',
+      type: '能力证据',
+      title: `能力维度对应：${dimensionNames.join('、')}`,
+      conclusion: `会议结果要求练习设计兼顾 ${dimensionNames.join('、')}，不能只做概念讲解。`,
+      profileData: dimensionRows.map((item) => `${item.name}：${item.score ?? '-'} 分`),
+      meetingBasis: latestByAgent(['ability', 'practice', 'report']).map((item) => `${item.agentName}：${sanitizeConsultationText(item.content, 120)}`),
+      action: `练习数量 ${generationConfig.exerciseCount || 5} 题，覆盖基础识别、变式迁移和错因复盘。`,
+    })
+  }
+
+  if (generatedResources.value.length || resourceLabels.length) {
+    const resourceNames = generatedResources.value.length
+      ? generatedResources.value.map((item) => item.title).filter(Boolean).slice(0, 6)
+      : resourceLabels
+    rows.push({
+      id: 'resource-plan',
+      type: '资源证据',
+      title: `资源方案对应：${resourceNames.join('、') || '待生成资源'}`,
+      conclusion: '会议结果要求每个个性化资源都能说明服务哪个画像薄弱点，以及如何帮助学生完成下一步学习。',
+      profileData: [
+        `资源类型：${resourceLabels.join('、') || '未选择'}`,
+        `生成对象：${generationConfig.generationScope === 'class' ? '班级共性' : '单个学生'}`,
+        `发布模式：${generationConfig.publishMode === 'publish_after_review' ? '审核后发布' : '只生成草稿'}`,
+      ],
+      meetingBasis: latestByAgent(['resource', 'qualityReview', 'consistencyReview']).map((item) => `${item.agentName}：${sanitizeConsultationText(item.content, 120)}`),
+      action: '教师需要检查资源内容、题目答案解析、视频或讲义是否完整，再保存或发送。',
+    })
+  }
+
+  if (teacherRequirement.value) {
+    rows.push({
+      id: 'teacher-requirement',
+      type: '教师补充',
+      title: '教师补充要求已纳入会诊',
+      conclusion: teacherRequirement.value,
+      profileData: ['来源：教师输入', `目标学生：${student.studentName || student.studentId || '当前学生'}`],
+      meetingBasis: messages.filter((item) => item.content?.includes('教师')).slice(-2).map((item) => `${item.agentName}：${item.role}`),
+      action: '后续智能体和资源生成需要优先满足该补充要求。',
+    })
+  }
+
+  return rows
+})
+
 const finalMeetingResult = computed(() => {
   const messages = consultationMessages.value.filter((item) => item.agentId !== 'teacher')
   const agentIds = [...new Set(messages.map((item) => item.agentId).filter(Boolean))]
@@ -349,7 +434,7 @@ const finalMeetingResult = computed(() => {
     dimensionNames.length
       ? `能力诊断关注：${dimensionNames.join('、')}，练习设计需兼顾理解迁移、作答表现和学习参与。`
       : '',
-    finalMessages[0]?.content ? sanitizeConsultationText(finalMessages[0].content, 260) : '',
+    finalMessages[0]?.content ? sanitizeConsultationText(finalMessages[0].content, 0) : '',
   ].filter(Boolean)
   const resourcePlan = (resourceNames.length ? resourceNames : ['知识讲解视频', '补救练习', '错因复盘', '学习路径']).map((name, index) => ({
     title: name,
@@ -377,7 +462,7 @@ const finalMeetingResult = computed(() => {
   const digest = finalMessages.length
     ? finalMessages.map((item) => ({
       title: `${item.agentName}：${item.role}`,
-      content: sanitizeConsultationText(item.content, 360),
+      content: sanitizeConsultationText(item.content, 0),
     }))
     : [{
       title: '会诊决策摘要',
@@ -388,7 +473,7 @@ const finalMeetingResult = computed(() => {
     status: consultationDecision.value.status,
     rounds: maxRound,
     agentCount: agentIds.length,
-    evidenceCount: consultationEvidenceItems.value.length,
+    evidenceCount: consultationEvidenceLinks.value.length || consultationEvidenceItems.value.length,
     resourceCount: resourcePlan.length,
     consensus,
     resourcePlan,
@@ -408,6 +493,32 @@ function isReady(agentId) {
 function normalizeStringList(value) {
   if (!Array.isArray(value)) return []
   return value.map((item) => sanitizeConsultationText(String(item || ''), 80)).filter(Boolean)
+}
+
+function profileWeakPointEvidence(item) {
+  const parts = [item?.tagName || item?.name || '薄弱知识点']
+  const score = item?.score ?? item?.masteryScore ?? item?.mastery
+  const wrongCount = item?.wrongCount ?? item?.mistakeCount ?? item?.errorCount
+  const attemptCount = item?.attemptCount ?? item?.questionCount ?? item?.totalCount
+  if (score != null && score !== '') {
+    const numericScore = Number(score)
+    parts.push(Number.isFinite(numericScore) && numericScore <= 1 ? `掌握度 ${Math.round(numericScore * 100)}%` : `掌握度 ${score}`)
+  }
+  if (wrongCount != null && wrongCount !== '') parts.push(`错题 ${wrongCount} 次`)
+  if (attemptCount != null && attemptCount !== '') parts.push(`相关作答 ${attemptCount} 次`)
+  return parts.join(' · ')
+}
+
+function hasActiveConsultationState() {
+  return Boolean(
+    generationTaskId.value
+    || lastRun.value
+    || liveConsultationMessages.value.length
+    || pendingConsultationMessages.value.length
+    || generatedResources.value.length
+    || completedAgents.value.length
+    || ['running', 'resuming', 'refining', 'paused_for_teacher', 'completed'].includes(consultationState.value),
+  )
 }
 
 function sanitizeConsultationText(value, maxLength = 220) {
@@ -632,6 +743,27 @@ function addConsultationMessage(agentId, content, options = {}) {
   return message
 }
 
+function isMessageAwaitingReview(message) {
+  return Boolean(
+    message
+    && message.status === 'fallback'
+    && consultationState.value === 'paused_for_teacher'
+    && reviewingMessageId.value === message.id
+  )
+}
+
+function markConsultationMessageReviewed(messageId) {
+  if (!messageId) return
+  liveConsultationMessages.value = liveConsultationMessages.value.map((item) => {
+    if (item.id !== messageId) return item
+    return {
+      ...item,
+      status: 'reviewed',
+      evidenceRefs: [...new Set([...(item.evidenceRefs || []), '教师已复核'])],
+    }
+  })
+}
+
 async function addModelConsultationMessage(agentId, fallbackOutput) {
   if (meetingLoading.value || liveConsultationMessages.value.length > 0) return
   if (['coordinator', 'knowledge', 'ability'].includes(agentId)) {
@@ -657,6 +789,7 @@ async function startConsultationMeeting(options = {}) {
   activeAgentId.value = ''
   flowingEdges.value = []
   pausedAgentId.value = ''
+  reviewingMessageId.value = ''
   followUpText.value = ''
   consultationState.value = 'running'
   meetingLoading.value = true
@@ -756,6 +889,17 @@ async function playConsultationStep(message, token) {
   if (!completedAgents.value.includes(agentId)) completedAgents.value.push(agentId)
   agentOutputs[agentId] = message.content
   addLog(agentId, message.content)
+  if (message.status === 'fallback') {
+    consultationState.value = 'paused_for_teacher'
+    meetingLoading.value = false
+    pausedAgentId.value = agentId
+    reviewingMessageId.value = message.id
+    activeAgentId.value = agentId
+    flowingEdges.value = []
+    persistWorkspace()
+    ElMessage.warning(`${agentDisplayName(agentId)} 的会诊意见需要教师复核，确认或补充后才会继续。`)
+    return
+  }
   if (agentId === 'consistencyReview') {
     await generateResourcesFromConsultation()
   }
@@ -791,6 +935,7 @@ function pauseConsultationForAgent(agentId) {
   consultationState.value = 'paused_for_teacher'
   meetingLoading.value = false
   pausedAgentId.value = agentId
+  reviewingMessageId.value = ''
   followUpText.value = ''
   activeAgentId.value = agentId
   flowingEdges.value = []
@@ -801,16 +946,63 @@ function pauseConsultationForAgent(agentId) {
 function openFollowUpForAgent(agentId) {
   consultationWindowOpen.value = true
   pausedAgentId.value = agentId
+  reviewingMessageId.value = ''
   followUpText.value = ''
   consultationState.value = generatedResources.value.length ? 'refining' : 'paused_for_teacher'
   activeConsultationTab.value = 'discussion'
 }
 
+function prepareMessageFollowUp(message) {
+  if (!message) return
+  consultationWindowOpen.value = true
+  pausedAgentId.value = message.agentId
+  reviewingMessageId.value = message.id
+  followUpText.value = ''
+  consultationState.value = 'paused_for_teacher'
+  activeConsultationTab.value = 'discussion'
+}
+
 function cancelFollowUp() {
   pausedAgentId.value = ''
+  reviewingMessageId.value = ''
   followUpText.value = ''
   if (consultationState.value === 'paused_for_teacher' || consultationState.value === 'refining') {
     consultationState.value = generatedResources.value.length ? 'completed' : 'idle'
+  }
+}
+
+async function continueConsultationAfterReview() {
+  const messageId = reviewingMessageId.value
+  if (!messageId) return
+  const reviewedMessage = liveConsultationMessages.value.find((item) => item.id === messageId)
+  markConsultationMessageReviewed(messageId)
+  pausedAgentId.value = ''
+  reviewingMessageId.value = ''
+  followUpText.value = ''
+  consultationState.value = pendingConsultationMessages.value.length ? 'resuming' : 'completed'
+  meetingLoading.value = pendingConsultationMessages.value.length > 0
+  meetingPlaybackToken.value += 1
+  const token = meetingPlaybackToken.value
+  try {
+    if (pendingConsultationMessages.value.length) {
+      await playConsultationMessages(pendingConsultationMessages.value, { token, replacePending: false })
+    } else if (reviewedMessage?.agentId === 'consistencyReview') {
+      await generateResourcesFromConsultation()
+    }
+    if (consultationState.value !== 'paused_for_teacher') {
+      meetingLoading.value = false
+      consultationState.value = generatedResources.value.length || reviewedMessage?.agentId === 'consistencyReview' ? 'completed' : 'idle'
+      activeAgentId.value = ''
+      flowingEdges.value = []
+    }
+    persistWorkspace()
+  } catch (error) {
+    meetingLoading.value = false
+    consultationState.value = 'paused_for_teacher'
+    pausedAgentId.value = reviewedMessage?.agentId || ''
+    reviewingMessageId.value = reviewedMessage?.id || ''
+    ElMessage.error(error.message || '继续会诊失败')
+    persistWorkspace()
   }
 }
 
@@ -837,9 +1029,13 @@ async function submitAgentFollowUp() {
     createdAt: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
     status: 'success',
   }, liveConsultationMessages.value.length)
+  if (reviewingMessageId.value) {
+    markConsultationMessageReviewed(reviewingMessageId.value)
+  }
   liveConsultationMessages.value = sortConsultationMessages([...liveConsultationMessages.value, teacherMessage])
   const startAgentId = agentId
   pausedAgentId.value = ''
+  reviewingMessageId.value = ''
   followUpText.value = ''
   pendingConsultationMessages.value = []
   consultationState.value = generatedResources.value.length ? 'refining' : 'resuming'
@@ -863,7 +1059,7 @@ async function submitAgentFollowUp() {
       teacherRequirement: teacherRequirement.value,
       feedback,
       agentId: startAgentId,
-      discussionMessages: liveConsultationMessages.value.filter((item) => item.status !== 'running'),
+      discussionMessages: consultationMessages.value.filter((item) => item.status !== 'running'),
     })
     const currentMaxTurn = nextConsultationTurnIndex() - 1
     const normalized = Array.isArray(messages)
@@ -933,56 +1129,56 @@ function buildLocalMeetingMessages(reason = '', startAgentId = '', feedback = ''
       agentId: 'knowledge',
       replyToAgentId: 'coordinator',
       role: '知识诊断',
-      content: `我回应协调智能体：知识层面应先补 ${weakText}，资源不能泛讲，要把概念、例题和易错点串成一条学习链。`,
+      content: `我已阅读预处理和协调意见。知识层面确实应先补 ${weakText}，但需要校准一点：资源不能只按知识点平铺，要把概念、例题、易错点和作答证据串成一条可复盘的学习链。`,
     },
     {
       round: 1,
       agentId: 'ability',
       replyToAgentId: 'knowledge',
       role: '能力评估',
-      content: `我补充知识诊断：这些薄弱点会继续影响 ${dimensionText}，所以资源后面必须接变式练习，验证学生能否迁移。`,
+      content: `我综合前面全部意见后补充：这些薄弱点会继续影响 ${dimensionText}。如果方案只强调补知识还不够，资源后面必须接变式练习，验证学生能否把概念迁移到新题。`,
     },
     {
       round: 1,
       agentId: 'behavior',
       replyToAgentId: 'ability',
       role: '错因复盘',
-      content: '我对能力评估再补一层：如果学生只看讲解不复盘错因，仍可能在边界条件、输入输出和变量状态上反复出错。',
+      content: '我看完知识和能力判断后补充错因视角：如果学生只看讲解不复盘错因，仍可能在边界条件、输入输出和变量状态上反复出错。因此资源方案必须包含错题复盘清单，而不是只给讲义和练习。',
     },
     {
       round: 2,
       agentId: 'resource',
       replyToAgentId: 'behavior',
       role: '资源建议',
-      content: `我基于前面讨论提出资源包：先给 ${weakText} 的讲解材料，再配补救练习和学习路径，资源类型建议为 ${resourceText}。`,
+      content: `我基于前面所有诊断意见提出资源包：先给 ${weakText} 的讲解材料，再配补救练习、错因复盘和学习路径，资源类型建议为 ${resourceText}。如果某类资源没有直接服务薄弱点，应退回重写。`,
     },
     {
       round: 2,
       agentId: 'practice',
       replyToAgentId: 'resource',
       role: '练习设计',
-      content: '我回应资源方案：练习分三层，先基础识别，再变式迁移，最后用错因复盘题让学生写出判断依据。',
+      content: '我综合知识、能力、错因和资源方案后设计练习：练习分三层，先基础识别，再变式迁移，最后用错因复盘题让学生写出判断依据。若题目只考记忆、不检验迁移，需要调整。',
     },
     {
       round: 2,
       agentId: 'report',
       replyToAgentId: 'practice',
       role: '阶段汇总',
-      content: '我汇总当前方案：诊断结论、资源包和练习梯度已经形成，下一步交给审核智能体检查可用性与一致性。',
+      content: '我汇总当前多方意见：诊断结论、资源包和练习梯度已经形成。这里先不直接发布，下一步应由审核智能体逐项检查资源是否完整、可用、难度匹配且与画像一致。',
     },
     {
       round: 3,
       agentId: 'qualityReview',
       replyToAgentId: 'report',
       role: '质量审核',
-      content: '我审核练习方案：资源可以采用，但题干、答案、解析和知识点标签必须完整，视频或讲义要能直接给学生使用。',
+      content: '我阅读了前面全部会诊意见后进行质量审核：资源方向可以采用，但题干、答案、解析和知识点标签必须完整，视频或讲义要能直接给学生使用；缺少任何一项都应标记为需修改。',
     },
     {
       round: 3,
       agentId: 'consistencyReview',
       replyToAgentId: 'qualityReview',
       role: '一致性审核',
-      content: `我回应审核意见：资源方向与画像证据一致，重点仍应锁定 ${weakText}，避免生成过宽泛的综合材料。`,
+      content: `我在质量审核基础上做一致性复核：资源方向与画像证据基本一致，重点仍应锁定 ${weakText}。如果前面方案中出现过宽泛的综合材料，需要删减或改写为针对性资源。`,
     },
   ]
   const startIndex = startAgentId ? Math.max(0, rows.findIndex((item) => item.agentId === startAgentId)) : 0
@@ -1072,6 +1268,7 @@ function resetFlow(options = {}) {
   meetingLoading.value = false
   consultationState.value = 'idle'
   pausedAgentId.value = ''
+  reviewingMessageId.value = ''
   followUpText.value = ''
   candidateResources.value = []
   if (!preserveGeneratedResources) {
@@ -1151,6 +1348,7 @@ function persistWorkspace() {
     pendingConsultationMessages: pendingConsultationMessages.value,
     consultationState: consultationState.value,
     pausedAgentId: pausedAgentId.value,
+    reviewingMessageId: reviewingMessageId.value,
     teacherRequirement: teacherRequirement.value,
     generationConfig: { ...generationConfig },
     agentOutputs,
@@ -1182,6 +1380,7 @@ function restoreWorkspace() {
       meetingLoading.value = true
     }
     pausedAgentId.value = saved.pausedAgentId || ''
+    reviewingMessageId.value = saved.reviewingMessageId || ''
     teacherRequirement.value = saved.teacherRequirement || ''
     Object.assign(generationConfig, saved.generationConfig || {})
     Object.keys(agentOutputs).forEach((key) => {
@@ -1250,7 +1449,7 @@ async function loadStudents() {
     if (students.value.length > 0) {
       const stillExists = students.value.some((item) => String(item.studentId) === String(selectedStudentId.value))
       selectedStudentId.value = stillExists ? selectedStudentId.value : String(students.value[0].studentId)
-      if (!generationTaskId.value && !lastRun.value && generatedResources.value.length === 0 && completedAgents.value.length === 0) {
+      if (!hasActiveConsultationState()) {
         resetFlow()
       }
     } else {
@@ -2262,16 +2461,35 @@ onUnmounted(() => {
             </div>
           </el-tab-pane>
           <el-tab-pane label="画像证据" name="evidence">
-            <div class="evidence-stack">
-              <div v-for="item in consultationEvidenceItems" :key="item" class="evidence-chip">
-                <span></span>
-                <strong>{{ item }}</strong>
-              </div>
-              <div v-if="teacherRequirement" class="evidence-chip is-teacher">
-                <span></span>
-                <strong>教师要求：{{ teacherRequirement }}</strong>
-              </div>
+            <div v-if="consultationEvidenceLinks.length" class="evidence-link-grid">
+              <article v-for="item in consultationEvidenceLinks" :key="item.id" class="evidence-link-card">
+                <div class="evidence-link-head">
+                  <el-tag size="small" type="success" effect="plain" round>{{ item.type }}</el-tag>
+                  <strong>{{ item.title }}</strong>
+                </div>
+                <p class="evidence-link-conclusion">{{ item.conclusion }}</p>
+                <div class="evidence-link-columns">
+                  <section>
+                    <span>对应画像数据</span>
+                    <ul>
+                      <li v-for="value in item.profileData" :key="`${item.id}-profile-${value}`">{{ value }}</li>
+                    </ul>
+                  </section>
+                  <section>
+                    <span>会议对应依据</span>
+                    <ul>
+                      <li v-for="value in item.meetingBasis" :key="`${item.id}-meeting-${value}`">{{ value }}</li>
+                      <li v-if="!item.meetingBasis.length">等待后续智能体补充会议依据</li>
+                    </ul>
+                  </section>
+                </div>
+                <div class="evidence-link-action">
+                  <span>后续动作</span>
+                  <strong>{{ item.action }}</strong>
+                </div>
+              </article>
             </div>
+            <el-empty v-else description="暂无可对应的画像证据，开始会诊后自动生成证据链" :image-size="90" />
           </el-tab-pane>
           <el-tab-pane label="会议结果" name="decision">
             <div class="meeting-result-card">
@@ -2691,6 +2909,11 @@ onUnmounted(() => {
                           </el-tag>
                           <el-tag v-if="message.llmCallId" size="small" type="info" round>调用 {{ message.llmCallId }}</el-tag>
                           <el-tag v-if="message.status === 'fallback'" size="small" type="warning" round>待复核</el-tag>
+                          <el-tag v-if="message.status === 'reviewed'" size="small" type="success" round>教师已复核</el-tag>
+                        </div>
+                        <div v-if="isMessageAwaitingReview(message)" class="message-review-actions">
+                          <el-button size="small" type="success" @click="continueConsultationAfterReview">确认该意见并继续</el-button>
+                          <el-button size="small" plain @click="prepareMessageFollowUp(message)">补充 / 追问</el-button>
                         </div>
                       </div>
                     </article>
@@ -2698,37 +2921,55 @@ onUnmounted(() => {
 
                   <div v-if="pausedAgentId" class="consultation-followup">
                     <div class="followup-head">
-                      <strong>{{ consultationState === 'refining' ? '二次追问' : '暂停后补充' }}：{{ agentDisplayName(pausedAgentId) }}</strong>
-                      <span>提交后将从该智能体开始，继续让后续智能体讨论并更新资源方案。</span>
+                      <strong>{{ reviewingMessageId ? '教师复核' : consultationState === 'refining' ? '二次追问' : '暂停后补充' }}：{{ agentDisplayName(pausedAgentId) }}</strong>
+                      <span>{{ reviewingMessageId ? '这条意见来自兜底或异常返回。确认后才会继续后续智能体，也可以补充要求后再继续。' : '提交后将从该智能体开始，继续让后续智能体讨论并更新资源方案。' }}</span>
                     </div>
                     <el-input
                       v-model="followUpText"
                       type="textarea"
                       :rows="3"
-                      maxlength="500"
-                      show-word-limit
                       resize="none"
                       :placeholder="`请输入对 ${agentDisplayName(pausedAgentId)} 的补充或追问，例如：把数组越界和字符串结束符讲得更细。`"
                       @keydown.ctrl.enter.prevent="submitAgentFollowUp"
                     />
                     <div class="followup-actions">
                       <el-button @click="cancelFollowUp">取消</el-button>
+                      <el-button v-if="reviewingMessageId" type="success" plain :loading="meetingLoading" @click="continueConsultationAfterReview">确认通过并继续</el-button>
                       <el-button type="primary" :loading="meetingLoading" @click="submitAgentFollowUp">提交并继续会诊</el-button>
                     </div>
                   </div>
                 </el-tab-pane>
 
                 <el-tab-pane label="画像证据" name="evidence">
-                  <div class="evidence-stack">
-                    <div v-for="item in consultationEvidenceItems" :key="item" class="evidence-chip">
-                      <span></span>
-                      <strong>{{ item }}</strong>
-                    </div>
-                    <div v-if="teacherRequirement" class="evidence-chip is-teacher">
-                      <span></span>
-                      <strong>教师要求：{{ teacherRequirement }}</strong>
-                    </div>
+                  <div v-if="consultationEvidenceLinks.length" class="evidence-link-grid">
+                    <article v-for="item in consultationEvidenceLinks" :key="item.id" class="evidence-link-card">
+                      <div class="evidence-link-head">
+                        <el-tag size="small" type="success" effect="plain" round>{{ item.type }}</el-tag>
+                        <strong>{{ item.title }}</strong>
+                      </div>
+                      <p class="evidence-link-conclusion">{{ item.conclusion }}</p>
+                      <div class="evidence-link-columns">
+                        <section>
+                          <span>对应画像数据</span>
+                          <ul>
+                            <li v-for="value in item.profileData" :key="`${item.id}-profile-${value}`">{{ value }}</li>
+                          </ul>
+                        </section>
+                        <section>
+                          <span>会议对应依据</span>
+                          <ul>
+                            <li v-for="value in item.meetingBasis" :key="`${item.id}-meeting-${value}`">{{ value }}</li>
+                            <li v-if="!item.meetingBasis.length">等待后续智能体补充会议依据</li>
+                          </ul>
+                        </section>
+                      </div>
+                      <div class="evidence-link-action">
+                        <span>后续动作</span>
+                        <strong>{{ item.action }}</strong>
+                      </div>
+                    </article>
                   </div>
+                  <el-empty v-else description="暂无可对应的画像证据，开始会诊后自动生成证据链" :image-size="90" />
                 </el-tab-pane>
 
                 <el-tab-pane label="会议结果" name="decision">
